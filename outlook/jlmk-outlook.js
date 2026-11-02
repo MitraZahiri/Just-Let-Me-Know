@@ -29,8 +29,10 @@ const cat = {
   application: CATEGORY_PREFIX + 'Application',
   skip: CATEGORY_PREFIX + 'Skip',
   status: (s) => CATEGORY_PREFIX + s,
-  notified: (s) => CATEGORY_PREFIX + 'Notified ' + s,
+  drafted: (s) => CATEGORY_PREFIX + 'Drafted ' + s,   // draft prepared, not sent yet
+  notified: (s) => CATEGORY_PREFIX + 'Notified ' + s, // a sent message was seen
 };
+const ALL_STATUSES = Object.values(JLMK.STATUS);
 const MANUAL_STATUSES = [JLMK.STATUS.IN_REVIEW, JLMK.STATUS.POOL, JLMK.STATUS.REJECTED, JLMK.STATUS.FILLED];
 
 // ---------------------------------------------------------------------------
@@ -124,75 +126,150 @@ function graphClient(token) {
 // ---------------------------------------------------------------------------
 // Mailbox → conversations
 // ---------------------------------------------------------------------------
-async function loadConversations(graph, settings, me) {
-  const since = new Date(Date.now() - settings.lookbackDays * 86400000).toISOString();
-  const select = 'id,subject,from,receivedDateTime,conversationId,hasAttachments,categories,bodyPreview,isDraft';
-  // All folders incl. Sent Items, so we can see our own replies in the same conversation.
-  const messages = await graph.all(
-    `/me/messages?$filter=receivedDateTime ge ${since}&$select=${select}&$orderby=receivedDateTime asc&$top=100`
-  );
+/** Inbox, every folder below it, and Sent Items. Junk and Deleted Items are never read. */
+async function listFolderIds(graph) {
+  const inbox = await graph.call('GET', '/me/mailFolders/inbox?$select=id');
+  const ids = [];
+  const walk = async (id, hasChildren) => {
+    ids.push(id);
+    if (!hasChildren) return;
+    const kids = await graph.all(`/me/mailFolders/${id}/childFolders?$select=id,childFolderCount&$top=100`);
+    for (const k of kids) await walk(k.id, k.childFolderCount > 0);
+  };
+  await walk(inbox.id, true);
+  ids.push('sentitems');
+  return ids;
+}
+
+async function loadConversations(graph, settings, me, now) {
+  const since = new Date(now.getTime() - settings.lookbackDays * 86400000).toISOString();
+  const select = 'id,subject,from,receivedDateTime,sentDateTime,conversationId,hasAttachments,categories,bodyPreview,isDraft';
+  const filters = [
+    `receivedDateTime ge ${since}`,
+    // Manual statuses are honoured however old the conversation is.
+    ...MANUAL_STATUSES.map((s) => `categories/any(c:c eq '${cat.status(s)}')`),
+  ];
+
+  const byId = new Map();
+  for (const folder of await listFolderIds(graph)) {
+    for (const filter of filters) {
+      for (const m of await graph.all(`/me/mailFolders/${folder}/messages?$filter=${filter}&$select=${select}&$top=100`)) {
+        if (!m.isDraft) byId.set(m.id, m);
+      }
+    }
+  }
 
   const byConv = new Map();
-  for (const m of messages) {
-    if (m.isDraft) continue;
+  const time = (m) => new Date(m.sentDateTime || m.receivedDateTime).getTime();
+  for (const m of [...byId.values()].sort((a, b) => time(a) - time(b))) {
     if (!byConv.has(m.conversationId)) byConv.set(m.conversationId, []);
     byConv.get(m.conversationId).push(m);
   }
 
   const conversations = [];
-  for (const msgs of byConv.values()) {
+  for (const [id, msgs] of byConv) {
     const fromOf = (m) => (m.from && m.from.emailAddress && m.from.emailAddress.address || '').toLowerCase();
     const candidateMsgs = msgs.filter((m) => !me.includes(fromOf(m)));
     const ownMsgs = msgs.filter((m) => me.includes(fromOf(m)));
     if (!candidateMsgs.length) continue;
     const categories = new Set(msgs.flatMap((m) => m.categories || []));
-    conversations.push({ msgs, candidateMsgs, ownMsgs, categories, first: candidateMsgs[0], last: candidateMsgs[candidateMsgs.length - 1] });
+    conversations.push({ id, msgs, candidateMsgs, ownMsgs, categories, first: candidateMsgs[0], last: candidateMsgs[candidateMsgs.length - 1] });
   }
   return conversations;
 }
 
+async function fetchBody(graph, m) {
+  if (m.fullBody === undefined) {
+    const full = await graph.call('GET', `/me/messages/${m.id}?$select=body,internetMessageHeaders`);
+    m.fullBody = (full.body && full.body.content) || m.bodyPreview || '';
+    m.headers = full.internetMessageHeaders || [];
+  }
+  return m.fullBody;
+}
+
 async function classifyMessage(graph, m, settings) {
-  const full = await graph.call('GET', `/me/messages/${m.id}?$select=body,internetMessageHeaders`);
-  const headers = full.internetMessageHeaders || [];
-  const header = (n) => (headers.find((h) => h.name.toLowerCase() === n) || {}).value || '';
+  const body = await fetchBody(graph, m);
+  const header = (n) => (m.headers.find((h) => h.name.toLowerCase() === n) || {}).value || '';
   let attachments = [];
   if (m.hasAttachments) {
     const list = await graph.call('GET', `/me/messages/${m.id}/attachments?$select=name`);
     attachments = list.value.map((a) => a.name);
   }
-  const fromAddr = m.from && m.from.emailAddress;
   return JLMK.classify({
-    from: fromAddr ? `${fromAddr.name || ''} <${fromAddr.address}>` : '',
+    from: fromHeaderOf(m),
     subject: m.subject || '',
-    body: (full.body && full.body.content) || m.bodyPreview || '',
+    body,
     attachments,
     isBulk: !!header('list-unsubscribe') || /bulk|list/i.test(header('precedence')),
   }, settings);
 }
 
-function describe(conv) {
+function fromHeaderOf(m) {
+  const a = m.from && m.from.emailAddress;
+  return a ? `${a.name || ''} <${a.address}>` : '';
+}
+
+async function draftStillExists(graph, draftId) {
+  if (!draftId) return false;
+  try {
+    return !!(await graph.call('GET', `/me/messages/${draftId}?$select=isDraft`)).isDraft;
+  } catch (err) {
+    if (/→ 404/.test(err.message)) return false;
+    throw err;
+  }
+}
+
+/** Builds the input for JLMK.decide(); draft outcomes are returned, not applied. */
+async function describe(graph, conv, state) {
   const { first, last, ownMsgs, categories } = conv;
-  const fromAddr = first.from.emailAddress;
-  const fromHeader = `${fromAddr.name || ''} <${fromAddr.address}>`;
-  const lastOwn = ownMsgs.length ? new Date(ownMsgs[ownMsgs.length - 1].receivedDateTime) : null;
+  const sentAt = (m) => new Date(m.sentDateTime || m.receivedDateTime);
+  const ownSentDates = ownMsgs.map(sentAt);
+  const notified = ALL_STATUSES.filter((s) => categories.has(cat.notified(s)));
+  const drafted = [];
+  const resolutions = [];
+  const stored = state.drafts[conv.id] || {};
+  for (const s of ALL_STATUSES) {
+    if (!categories.has(cat.drafted(s)) || notified.includes(s)) continue;
+    const record = stored[s] || {};
+    const outcome = JLMK.resolveDraft({
+      draftedAt: record.at ? new Date(record.at) : null,
+      lastCandidateAt: new Date(last.receivedDateTime),
+      draftExists: await draftStillExists(graph, record.draftId),
+      ownSentDates,
+    });
+    if (outcome === 'pending') drafted.push(s);
+    else resolutions.push({ status: s, outcome });
+    if (outcome === 'sent') notified.push(s);
+  }
   return {
     subject: first.subject || '',
-    candidateEmail: fromAddr.address.toLowerCase(),
-    name: JLMK.extractFirstName(fromHeader),
+    candidateEmail: first.from.emailAddress.address.toLowerCase(),
     position: JLMK.extractPosition(first.subject),
     receivedAt: new Date(first.receivedDateTime),
     lastCandidateAt: new Date(last.receivedDateTime),
-    lastOwnReplyAt: lastOwn,
+    lastOwnReplyAt: ownSentDates.length ? ownSentDates[ownSentDates.length - 1] : null,
     statuses: MANUAL_STATUSES.filter((s) => categories.has(cat.status(s))),
-    notifiedStatuses: Object.values(JLMK.STATUS).filter((s) => categories.has(cat.notified(s))),
+    notifiedStatuses: notified,
+    draftedStatuses: drafted,
+    draftResolutions: resolutions,
     skip: categories.has(cat.skip),
   };
 }
 
-async function addCategories(graph, message, names) {
-  const next = Array.from(new Set([...(message.categories || []), ...names]));
+async function setCategories(graph, message, add, remove = []) {
+  const next = Array.from(new Set([...(message.categories || []), ...add])).filter((c) => !remove.includes(c));
   await graph.call('PATCH', `/me/messages/${message.id}`, { categories: next });
   message.categories = next;
+}
+
+/**
+ * Categories go on every candidate message of the conversation, so they are still
+ * seen when only some of its messages are loaded (e.g. old ones via a status category).
+ */
+async function markConversation(graph, conv, add, remove = []) {
+  for (const m of conv.candidateMsgs) await setCategories(graph, m, add, remove);
+  add.forEach((c) => conv.categories.add(c));
+  remove.forEach((c) => conv.categories.delete(c));
 }
 
 async function ensureMasterCategories(graph) {
@@ -216,13 +293,84 @@ function readState() {
 function writeState(s) {
   fs.writeFileSync(STATE_PATH, JSON.stringify(s, null, 2));
 }
-const today = () => new Date().toISOString().slice(0, 10);
+const dayKey = (now) => now.toISOString().slice(0, 10);
 
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
+/** Plain text → HTML for Graph's `comment`; bare http(s) URLs become links. */
 function toHtml(text) {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+  return text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/https?:\/\/[^\s<]*[^\s<.,;:!?)]/g, (url) => `<a href="${url}">${url}</a>`)
+    .replace(/\n/g, '<br>');
+}
+
+/**
+ * One pass over the mailbox. Mutates `state` ({day, count, drafts}); call `save`
+ * after each change so a crash never causes a duplicate.
+ */
+async function runOnce({ graph, me, settings, customTemplates, state, dryRun, now = new Date(), log = console.log, save = () => {} }) {
+  settings = JLMK.withDefaults(settings);
+  state.drafts = state.drafts || {};
+  let used = state.day === dayKey(now) ? state.count : 0;
+  let applications = 0;
+  let replies = 0;
+  const mode = JLMK.deliveryMode(settings);
+
+  for (const conv of await loadConversations(graph, settings, me, now)) {
+    const tracked = conv.categories.has(cat.application);
+    const hasStatus = MANUAL_STATUSES.some((s) => conv.categories.has(cat.status(s)));
+    if (!tracked && !hasStatus) {
+      if (!JLMK.prefilter(conv.first)) continue;
+      const verdict = await classifyMessage(graph, conv.first, settings);
+      if (!verdict.isApplication) continue;
+      if (!dryRun) await markConversation(graph, conv, [cat.application]);
+    }
+    applications++;
+
+    const info = await describe(graph, conv, state);
+    if (!dryRun) {
+      for (const r of info.draftResolutions) {
+        await markConversation(graph, conv, r.outcome === 'sent' ? [cat.notified(r.status)] : [], [cat.drafted(r.status)]);
+        if (state.drafts[conv.id]) {
+          delete state.drafts[conv.id][r.status];
+          if (!Object.keys(state.drafts[conv.id]).length) delete state.drafts[conv.id];
+        }
+        save();
+      }
+    }
+
+    const decision = JLMK.decide(info, now, settings);
+    if (decision.action !== 'reply') continue;
+
+    // Full body, not the 255-character preview.
+    const language = JLMK.detectLanguage(`${info.subject}\n${(await fetchBody(graph, conv.first)).slice(0, 3000)}`, settings.defaultLanguage);
+    const name = JLMK.extractFirstName(fromHeaderOf(conv.first), language);
+    const line = `${decision.status.padEnd(15)} ${language.toUpperCase()}  ${info.candidateEmail}  "${info.subject}"  (${decision.reason})`;
+
+    if (used >= settings.dailyLimit) { log('LIMIT    ' + line); continue; }
+    if (dryRun) { log('PREVIEW  ' + line); replies++; continue; }
+
+    const body = toHtml(JLMK.render(decision.status, { ...info, name, language }, settings, customTemplates));
+    if (mode === 'send') {
+      await graph.call('POST', `/me/messages/${conv.last.id}/reply`, { comment: body });
+      await markConversation(graph, conv, [cat.application, cat.notified(decision.status)]);
+    } else {
+      const draft = await graph.call('POST', `/me/messages/${conv.last.id}/createReply`, { comment: body });
+      await markConversation(graph, conv, [cat.application, cat.drafted(decision.status)]);
+      state.drafts[conv.id] = { ...state.drafts[conv.id], [decision.status]: { at: now.toISOString(), draftId: draft && draft.id } };
+    }
+    used++;
+    replies++;
+    state.day = dayKey(now);
+    state.count = used;
+    save();
+    log((mode === 'send' ? 'SENT     ' : 'DRAFTED  ') + line);
+  }
+
+  log(`\n${applications} applications, ${replies} ${dryRun ? 'would get a reply (preview — nothing changed)' : 'handled'}.`);
+  return { applications, replies };
 }
 
 async function main() {
@@ -243,49 +391,14 @@ async function main() {
   if (!dryRun) await ensureMasterCategories(graph);
 
   const state = readState();
-  let used = state.day === today() ? state.count : 0;
-  const now = new Date();
-  let applications = 0;
-  let replies = 0;
-
-  const conversations = await loadConversations(graph, settings, me);
-  for (const conv of conversations) {
-    const tracked = conv.categories.has(cat.application);
-    const info = describe(conv);
-    if (!tracked && !info.statuses.length) {
-      if (!conv.first.hasAttachments && !/cv|resume|application|applying|ba[sş]vuru|[oö]zge[cç]mi[sş]|pozisyon|position/i.test(conv.first.subject || '')) continue;
-      const verdict = await classifyMessage(graph, conv.first, settings);
-      if (!verdict.isApplication) continue;
-      if (!dryRun) await addCategories(graph, conv.first, [cat.application]);
-    }
-    applications++;
-
-    const decision = JLMK.decide(info, now, settings);
-    if (decision.action !== 'reply') continue;
-
-    const language = JLMK.detectLanguage(`${info.subject}\n${conv.first.bodyPreview || ''}`, settings.defaultLanguage);
-    const line = `${decision.status.padEnd(15)} ${language.toUpperCase()}  ${info.candidateEmail}  "${info.subject}"  (${decision.reason})`;
-
-    if (used >= settings.dailyLimit) { console.log('LIMIT    ' + line); continue; }
-    if (dryRun) { console.log('PREVIEW  ' + line); replies++; continue; }
-
-    const body = toHtml(JLMK.render(decision.status, { ...info, language }, settings, config.customTemplates));
-    if (JLMK.deliveryMode(settings) === 'send') {
-      await graph.call('POST', `/me/messages/${conv.last.id}/reply`, { comment: body });
-    } else {
-      await graph.call('POST', `/me/messages/${conv.last.id}/createReply`, { comment: body });
-    }
-    await addCategories(graph, conv.first, [cat.application, cat.notified(decision.status)]);
-    used++;
-    replies++;
-    writeState({ day: today(), count: used });
-    console.log((JLMK.deliveryMode(settings) === 'send' ? 'SENT     ' : 'DRAFTED  ') + line);
-  }
-
-  console.log(`\n${applications} applications, ${replies} ${dryRun ? 'would get a reply (preview — nothing changed)' : 'handled'}.`);
+  await runOnce({ graph, me, settings, customTemplates: config.customTemplates, state, dryRun, save: () => writeState(state) });
 }
 
-main().catch((err) => {
-  console.error(err.message || err);
-  process.exit(1);
-});
+module.exports = { runOnce, listFolderIds, loadConversations, toHtml, cat };
+
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(err.message || err);
+    process.exit(1);
+  });
+}

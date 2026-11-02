@@ -13,11 +13,13 @@ JLMK_I18N.tr = {
     greeting: 'Merhaba {{name}},',
     greetingNoName: 'Merhaba,',
     signoff: 'Saygılarımızla,',
-    privacy: 'Kişisel verileriniz yalnızca işe alım amacıyla en fazla {{retentionMonths}} ay süreyle saklanır (KVKK). Bu e-postayı yanıtlayarak verilerinizin silinmesini istediğiniz zaman talep edebilirsiniz.',
+    privacy: 'Kişisel verileriniz yalnızca işe alım amacıyla en fazla {{retentionMonths}} ay süreyle saklanır (KVKK). Bu e-postayı yanıtlayarak verilerinizin silinmesini istediğiniz zaman talep edebilirsiniz.' +
+      '{{#privacyNoticeUrl}} Aydınlatma metni: {{privacyNoticeUrl}}{{/privacyNoticeUrl}}',
+    // Bilerek nötr: İK bir durum seçmeden sonuç ima edilmez.
     Received:
-      '{{#position}}{{position}} pozisyonu için {{/position}}başvurunuz için teşekkür ederiz. Başvurunuzun bize ulaştığını ve ekibimiz tarafından görüldüğünü bildirmek isteriz.\n\n' +
-      'Şu an için süreci ilerletemiyoruz; ancak özgeçmişinizi aday havuzumuzda tutmak isteriz. Uygun bir pozisyon açıldığında sizinle iletişime geçeceğiz.\n\n' +
-      '{{company}} ile ilgilendiğiniz için teşekkür eder, kariyerinizde başarılar dileriz.',
+      '{{#position}}{{position}} pozisyonu için {{/position}}başvurunuz için teşekkür ederiz. Başvurunuzun bize ulaştığını bildirmek isteriz.\n\n' +
+      'Değerlendirme süreci devam ediyor; sonucu size bildireceğiz.\n\n' +
+      '{{company}} ile ilgilendiğiniz için teşekkür ederiz.',
     InReview:
       '{{#position}}{{position}} pozisyonu için {{/position}}başvurunuz için teşekkür ederiz. Başvurunuz şu anda ekibimiz tarafından değerlendirilmektedir. ' +
       'Bir gelişme olduğunda en kısa sürede size dönüş yapacağız; bu süreçte sizi habersiz bırakmak istemedik.',

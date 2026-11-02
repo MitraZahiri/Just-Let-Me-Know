@@ -192,16 +192,17 @@ var JLMKCandidate = (function () {
     var toHeader = [].concat(first.to || [])[0] || '';
     var recipient = recipientsOf({ to: first.to })[0] || '';
     var followUps = (thread.followUps || []).slice().sort(function (a, b) { return a - b; });
+    var language = J.detectLanguage((first.subject || '') + '\n' + (first.body || '').slice(0, 3000), settings.defaultLanguage);
 
     var app = {
       source: 'email',
       company: J.extractCompany({ to: toHeader, subject: first.subject }),
       position: J.extractPosition(first.subject),
       recipient: recipient,
-      recipientName: J.extractFirstName(toHeader),
+      recipientName: J.extractFirstName(toHeader, language),
       subject: first.subject || '',
       appliedAt: first.date,
-      language: J.detectLanguage((first.subject || '') + '\n' + (first.body || '').slice(0, 3000), settings.defaultLanguage),
+      language: language,
       status: STATUS.SENT,
       history: [{ status: STATUS.SENT, at: first.date, reason: 'application sent' }],
       lastOutboundAt: first.date,

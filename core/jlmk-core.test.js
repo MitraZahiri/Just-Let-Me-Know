@@ -261,3 +261,115 @@ test('extractPosition: more subject shapes', () => {
   assert.equal(JLMK.extractPosition('Yazılım Mühendisi Pozisyonu Başvurusu'), 'Yazılım Mühendisi');
   assert.equal(JLMK.extractPosition('Başvurusu: İK Uzmanı'), 'İK Uzmanı');
 });
+
+// =============================================================================
+// Bug fixes (v0.2.1) — each test below was red before its fix.
+// =============================================================================
+
+// 1. Received must be neutral; "can't move forward / talent pool" only in Pool, Rejected, PositionFilled.
+test('fix1: Received template is neutral in TR and EN', () => {
+  const tr = JLMK.render('Received', { language: 'tr' }, { includePrivacyNote: false });
+  const en = JLMK.render('Received', { language: 'en' }, { includePrivacyNote: false });
+  assert.doesNotMatch(tr, /ilerlet|ilerley|havuz/i);
+  assert.doesNotMatch(en, /move forward|talent pool|on file/i);
+  assert.match(tr, /bize ulaştı/);
+  assert.match(tr, /değerlendirme/i);
+  assert.match(tr, /sonucu.*bildireceğiz/);
+  assert.match(en, /reached us/);
+  assert.match(en, /review/i);
+  assert.match(en, /let you know/);
+});
+
+test('fix1: negative wording stays in Pool, Rejected and PositionFilled', () => {
+  assert.match(JLMK.render('Pool', { language: 'tr' }), /havuz/);
+  assert.match(JLMK.render('Rejected', { language: 'en' }), /other candidates/);
+  assert.match(JLMK.render('PositionFilled', { language: 'en' }), /has now been filled/);
+});
+
+// 2. "başvuru" is only a strong signal next to a job word; visa/loan/scholarship… are negative.
+const personal = (subject, body, attachment) =>
+  JLMK.classify({ from: 'Ayşe <ayse@gmail.com>', subject, body, attachments: [attachment] });
+
+test('fix2: visa / loan / scholarship applications are not job applications', () => {
+  assert.equal(personal('Vize başvurusu', 'Merhaba, vize başvurusu için belgeler ektedir.', 'pasaport.pdf').isApplication, false);
+  assert.equal(personal('Kredi başvurunuz', 'Kredi başvurunuzla ilgili sözleşme ektedir.', 'sözleşme.pdf').isApplication, false);
+  assert.equal(personal('Burs başvurusu', 'Burs başvurusu için transkriptim ekte.', 'transkript.pdf').isApplication, false);
+});
+
+test('fix2: other negative subject words', () => {
+  for (const w of ['Kart', 'Abonelik', 'Üyelik', 'Ruhsat', 'Patent', 'Tender']) {
+    assert.equal(personal(`${w} başvurusu`, 'Belgeler ektedir.', 'belge.pdf').isApplication, false, w);
+  }
+});
+
+test('fix2: bare "başvuru" + any document is not enough; with a job word it is strong', () => {
+  assert.equal(personal('Başvuru', 'Belgeler ektedir.', 'dosya.pdf').isApplication, false);
+  assert.equal(personal('Staj başvurusu', 'Belgeler ektedir.', 'dosya.pdf').isApplication, true);
+  assert.equal(personal('İş başvurusu', 'Belgeler ektedir.', 'dosya.pdf').isApplication, true);
+  assert.equal(personal('Bursa şubesi pozisyonu için başvuru', 'Merhaba.', 'cv.pdf').isApplication, true);
+});
+
+test('fix2: case folding keeps English capitals working ("INTERNSHIP", not "ınternshıp")', () => {
+  assert.equal(JLMK.classify({ from: 'a@b.com', subject: 'INTERNSHIP APPLICATION FOR IT', body: '', attachments: ['doc.pdf'] }).isApplication, true);
+  assert.equal(JLMK.prefilter({ subject: 'INTERNSHIP' }), true);
+  assert.equal(personal('VİZE BAŞVURUSU', 'Belgeler ektedir.', 'pasaport.pdf').isApplication, false);
+});
+
+// 3. Draft bookkeeping.
+test('fix3: resolveDraft — sent, still pending, or deleted', () => {
+  const at = new Date('2026-10-10T09:00:00Z');
+  const later = new Date('2026-10-11T09:00:00Z');
+  const earlier = new Date('2026-10-09T09:00:00Z');
+  assert.equal(JLMK.resolveDraft({ draftedAt: at, draftExists: true, ownSentDates: [] }), 'pending');
+  assert.equal(JLMK.resolveDraft({ draftedAt: at, draftExists: false, ownSentDates: [later] }), 'sent');
+  assert.equal(JLMK.resolveDraft({ draftedAt: at, draftExists: false, ownSentDates: [earlier] }), 'deleted');
+  assert.equal(JLMK.resolveDraft({ draftedAt: at, draftExists: false, ownSentDates: [] }), 'deleted');
+  // No stored time: a sent message after the candidate's last message counts.
+  assert.equal(JLMK.resolveDraft({ draftedAt: null, lastCandidateAt: earlier, draftExists: false, ownSentDates: [at] }), 'sent');
+});
+
+test('fix3: decide does not prepare a second draft while one is pending', () => {
+  const base = { receivedAt: day(0), statuses: [], notifiedStatuses: [], skip: false };
+  assert.equal(JLMK.decide({ ...base, draftedStatuses: ['Received'] }, day(10)).action, 'none');
+  assert.equal(JLMK.decide({ ...base, statuses: ['Rejected'], draftedStatuses: ['Rejected'] }, day(10)).action, 'none');
+  // A pending Received draft does not block a newer status.
+  assert.equal(JLMK.decide({ ...base, statuses: ['Rejected'], draftedStatuses: ['Received'] }, day(10)).status, 'Rejected');
+});
+
+// 5. Manual statuses are exempt from lookbackDays.
+test('fix5: status labels work on threads older than lookbackDays; Received does not', () => {
+  const old = { receivedAt: day(0), statuses: ['Rejected'], notifiedStatuses: [], skip: false };
+  assert.equal(JLMK.decide(old, day(120)).status, 'Rejected');
+  assert.equal(JLMK.decide({ ...old, statuses: [] }, day(120)).action, 'none');
+});
+
+// 6. Turkish casing.
+test('fix6: extractFirstName follows Turkish casing', () => {
+  assert.equal(JLMK.extractFirstName('IŞIK YILMAZ <isik@x.com>'), 'Işık');
+  assert.equal(JLMK.extractFirstName('İREM KAYA <irem@x.com>'), 'İrem');
+  assert.equal(JLMK.extractFirstName('ılgaz <i@x.com>'), 'Ilgaz');
+  assert.equal(JLMK.extractFirstName('irem kaya <i@x.com>', 'tr'), 'İrem');
+  // ASCII capitals carry no dot information: "KADIR" must not become "Kadır".
+  assert.equal(JLMK.extractFirstName('KADIR DEMIR <k@x.com>', 'tr'), 'Kadir');
+  assert.equal(JLMK.extractFirstName('LIAM SMITH <l@x.com>'), 'Liam');
+  assert.equal(JLMK.extractFirstName('LIAM SMITH <l@x.com>', 'en'), 'Liam');
+});
+
+// 7. One pre-filter for both platforms.
+test('fix7: prefilter is shared and covers Turkish word forms', () => {
+  assert.equal(JLMK.prefilter({ subject: 'Lunch?', hasAttachments: false }), false);
+  assert.equal(JLMK.prefilter({ subject: 'Lunch?', hasAttachments: true }), true);
+  assert.equal(JLMK.prefilter({ subject: 'Muhasebe pozisyonu başvurusu', hasAttachments: false }), true);
+  assert.equal(JLMK.prefilter({ subject: 'Özgeçmişim', hasAttachments: false }), true);
+  assert.ok(JLMK.PREFILTER_WORDS.includes('başvurusu'));
+});
+
+// 9. Optional link to the full privacy notice.
+test('fix9: privacyNoticeUrl appears in the KVKK/GDPR note only when set', () => {
+  const url = 'https://acme.com/kvkk';
+  assert.match(JLMK.render('Received', { language: 'tr' }, { privacyNoticeUrl: url }), /KVKK[\s\S]*https:\/\/acme\.com\/kvkk/);
+  assert.match(JLMK.render('Received', { language: 'en' }, { privacyNoticeUrl: url }), /https:\/\/acme\.com\/kvkk/);
+  assert.doesNotMatch(JLMK.render('Received', { language: 'en' }, {}), /https?:|Details|Ayrıntılı/);
+  assert.doesNotMatch(JLMK.render('Received', { language: 'en' }, { includePrivacyNote: false, privacyNoticeUrl: url }), /https?:/);
+  assert.equal(JLMK.withDefaults({ privacyNoticeUrl: 'javascript:alert(1)' }).privacyNoticeUrl, '');
+});

@@ -45,6 +45,7 @@ function buildHomeCard(notice) {
     .addWidget(textInput('waitDays', 'Days of silence before notifying', String(s.waitDays)))
     .addWidget(textInput('dailyLimit', 'Max replies per day', String(s.dailyLimit)))
     .addWidget(textInput('ownDomains', 'Your own domains (comma separated)', (s.ownDomains || []).join(', ')))
+    .addWidget(textInput('privacyNoticeUrl', 'Privacy notice link (KVKK/GDPR, optional)', s.privacyNoticeUrl))
     .addWidget(CardService.newSelectionInput()
       .setType(CardService.SelectionInputType.DROPDOWN)
       .setFieldName('mode').setTitle('Mode')
@@ -104,8 +105,10 @@ function handleSaveSettings(e) {
   current.mode = f.mode === 'send' ? 'send' : 'draft';
   current.defaultLanguage = f.defaultLanguage === 'tr' ? 'tr' : 'en';
   current.includePrivacyNote = f.includePrivacyNote === 'yes';
+  current.privacyNoticeUrl = (f.privacyNoticeUrl || '').trim();
   saveSettings(current);
-  return refreshHome('Settings saved.');
+  var linkRejected = current.privacyNoticeUrl && !JLMK.withDefaults(current).privacyNoticeUrl;
+  return refreshHome(linkRejected ? 'Saved, but the privacy link must start with http:// or https://' : 'Settings saved.');
 }
 
 function handleEnable() { enableSchedule(); return refreshHome('Daily run turned on.'); }
@@ -121,6 +124,7 @@ function handlePreview() {
   var r = run({ dryRun: true });
   var section = CardService.newCardSection()
     .setHeader(r.applications + ' applications · ' + r.actions.length + ' would get a reply');
+  if (r.note) section.addWidget(CardService.newTextParagraph().setText('<b>' + r.note + '</b>'));
   if (!r.actions.length) {
     section.addWidget(CardService.newTextParagraph().setText('Nothing to send right now.'));
   }
@@ -177,6 +181,10 @@ function buildMessageCard(messageId, notice) {
         .setText(info.statuses.join(', ') || 'Waiting').setBottomLabel(decision.reason).setWrapText(true))
       .addWidget(CardService.newDecoratedText().setTopLabel('Already informed')
         .setText(info.notifiedStatuses.join(', ') || 'Not yet'));
+    if (info.draftedStatuses.length) {
+      section.addWidget(CardService.newDecoratedText().setTopLabel('Draft waiting to be sent')
+        .setText(info.draftedStatuses.join(', ')));
+    }
 
     var buttons = CardService.newCardSection().setHeader('Set a status — the reply goes out on the next run');
     [['In review', JLMK.STATUS.IN_REVIEW], ['Talent pool', JLMK.STATUS.POOL],

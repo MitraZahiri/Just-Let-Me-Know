@@ -12,7 +12,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test core/jlmk-core.test.js core/candidate.test.js gmail/engine.test.js && node scripts/build-gmail.js --check",
+    "test": "node --test core/jlmk-core.test.js core/candidate.test.js gmail/engine.test.js outlook/outlook.test.js && node scripts/build-gmail.js --check",
     "build:gmail": "node scripts/build-gmail.js",
     "push:gmail": "node scripts/build-gmail.js && cd gmail && clasp push",
     "outlook:login": "node outlook/jlmk-outlook.js --login",

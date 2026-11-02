@@ -13,7 +13,8 @@
     "ownDomains": ["acme.com"],
     "defaultLanguage": "en",
     "includePrivacyNote": true,
-    "retentionMonths": 12
+    "retentionMonths": 12,
+    "privacyNoticeUrl": ""
   },
   "customTemplates": null
 }

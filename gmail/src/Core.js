@@ -19,11 +19,13 @@ JLMK_I18N.en = {
     greeting: 'Dear {{name}},',
     greetingNoName: 'Hello,',
     signoff: 'Kind regards,',
-    privacy: 'Your data is stored only for recruitment purposes for up to {{retentionMonths}} months. You can ask us to delete it at any time by replying to this email.',
+    privacy: 'Your data is stored only for recruitment purposes for up to {{retentionMonths}} months. You can ask us to delete it at any time by replying to this email.' +
+      '{{#privacyNoticeUrl}} Full privacy notice: {{privacyNoticeUrl}}{{/privacyNoticeUrl}}',
+    // Neutral on purpose: no outcome is implied before HR picks a status.
     Received:
-      'Thank you for your application{{#position}} for the {{position}} position{{/position}}. We want to let you know that it reached us and has been seen by our team.\n\n' +
-      'We are not able to move forward with it right now, but we would like to keep your CV in our talent pool and will reach out to you if a suitable opportunity opens up.\n\n' +
-      'We appreciate your interest in {{company}} and wish you the best in your search.',
+      'Thank you for your application{{#position}} for the {{position}} position{{/position}}. We want to let you know that it has reached us and our team is reviewing it.\n\n' +
+      'The evaluation is still in progress, and we will let you know the outcome.\n\n' +
+      'We appreciate your interest in {{company}}.',
     InReview:
       'Thank you for your application{{#position}} for the {{position}} position{{/position}}. Your application is currently being reviewed by our team. ' +
       'We will get back to you as soon as we have an update — we did not want to leave you without news in the meantime.',
@@ -73,11 +75,13 @@ JLMK_I18N.tr = {
     greeting: 'Merhaba {{name}},',
     greetingNoName: 'Merhaba,',
     signoff: 'Saygılarımızla,',
-    privacy: 'Kişisel verileriniz yalnızca işe alım amacıyla en fazla {{retentionMonths}} ay süreyle saklanır (KVKK). Bu e-postayı yanıtlayarak verilerinizin silinmesini istediğiniz zaman talep edebilirsiniz.',
+    privacy: 'Kişisel verileriniz yalnızca işe alım amacıyla en fazla {{retentionMonths}} ay süreyle saklanır (KVKK). Bu e-postayı yanıtlayarak verilerinizin silinmesini istediğiniz zaman talep edebilirsiniz.' +
+      '{{#privacyNoticeUrl}} Aydınlatma metni: {{privacyNoticeUrl}}{{/privacyNoticeUrl}}',
+    // Bilerek nötr: İK bir durum seçmeden sonuç ima edilmez.
     Received:
-      '{{#position}}{{position}} pozisyonu için {{/position}}başvurunuz için teşekkür ederiz. Başvurunuzun bize ulaştığını ve ekibimiz tarafından görüldüğünü bildirmek isteriz.\n\n' +
-      'Şu an için süreci ilerletemiyoruz; ancak özgeçmişinizi aday havuzumuzda tutmak isteriz. Uygun bir pozisyon açıldığında sizinle iletişime geçeceğiz.\n\n' +
-      '{{company}} ile ilgilendiğiniz için teşekkür eder, kariyerinizde başarılar dileriz.',
+      '{{#position}}{{position}} pozisyonu için {{/position}}başvurunuz için teşekkür ederiz. Başvurunuzun bize ulaştığını bildirmek isteriz.\n\n' +
+      'Değerlendirme süreci devam ediyor; sonucu size bildireceğiz.\n\n' +
+      '{{company}} ile ilgilendiğiniz için teşekkür ederiz.',
     InReview:
       '{{#position}}{{position}} pozisyonu için {{/position}}başvurunuz için teşekkür ederiz. Başvurunuz şu anda ekibimiz tarafından değerlendirilmektedir. ' +
       'Bir gelişme olduğunda en kısa sürede size dönüş yapacağız; bu süreçte sizi habersiz bırakmak istemedik.',
@@ -239,6 +243,7 @@ var JLMK = (function () {
     ownDomains: [],          // e.g. ['acme.com'] — internal mail is never an application
     includePrivacyNote: true,
     retentionMonths: 12,
+    privacyNoticeUrl: '',    // optional link to the full KVKK/GDPR notice (http/https only)
   };
 
   /**
@@ -260,9 +265,12 @@ var JLMK = (function () {
 
   var SUBJECT_STRONG = [
     /\bjob application\b/i, /\bapplication for\b/i, /\bapplying for\b/i,
-    /\b(cv|resume|résumé)\b/i, /iş başvurusu|is basvurusu/i, /başvuru|basvuru/i,
+    /\b(cv|resume|résumé)\b/i, /iş başvurusu|is basvurusu/i,
     /özgeçmiş|ozgecmis/i, /\bbewerbung\b/i, /\bcandidature\b/i,
   ];
+  // "başvuru" alone is used for visas, loans, cards…; it is only strong next to a job word.
+  var BASVURU = /başvuru|basvuru/i;
+  var JOB_CONTEXT = /(^|[^\p{L}])(pozisyon|iş(e|i|in|te)?(?!\p{L})|cv(?!\p{L})|özgeçmiş|ozgecmis|staj|ilan|kariyer|job|position)/iu;
   var SUBJECT_WEAK = [
     /\bposition\b/i, /\brole\b/i, /\bvacancy\b/i, /\bopening\b/i, /\binternship\b/i,
     /pozisyon|kadro|staj|ilan/i, /\bjob\b/i, /\bcareer\b/i, /kariyer/i,
@@ -278,6 +286,19 @@ var JLMK = (function () {
 
   // Things that look like an application on the surface but are not.
   var NEGATIVE_SUBJECT = /\b(invoice|receipt|order|payment|statement|newsletter|unsubscribe|digest)\b|fatura|makbuz|sipariş|siparis|ödeme|odeme|ekstre|bülten|bulten|abonelik/i;
+  // Non-job applications. "burs" but not "Bursa", "kart" but not "Kartal".
+  var NEGATIVE_APPLICATION = /(^|[^\p{L}])(vize|kredi|burs(?!a)|kart(ı|i|ınız|iniz|lar|ları|lari)?(?!\p{L})|abonelik|üyelik|uyelik|ruhsat|patent|tender)/iu;
+
+  // Cheap subject check before downloading a message (shared by Gmail and Outlook).
+  // PREFILTER_WORDS are whole words for Gmail search; the regex is the substring version.
+  var PREFILTER_WORDS = ['cv', 'resume', 'application', 'applying', 'başvuru', 'basvuru', 'başvurusu', 'basvurusu',
+    'başvurum', 'özgeçmiş', 'ozgecmis', 'özgeçmişim', 'pozisyon', 'pozisyonu', 'position', 'staj', 'internship'];
+  var PREFILTER = /(cv|resume|résumé|application|applying|ba[sş]vuru|[oö]zge[cç]mi[sş]|pozisyon|position|staj|internship)/;
+
+  /** True when a message is worth classifying at all. */
+  function prefilter(msg) {
+    return !!msg.hasAttachments || PREFILTER.test(plainLower(msg.subject));
+  }
   var NEGATIVE_BODY = [
     /unsubscribe|abonelikten çık|abonelikten cik/i,                                      // newsletter
     /(can|could) you (take a )?(look|check|review)|feedback on my (cv|resume)/i,        // "check my CV?" to a friend
@@ -304,15 +325,17 @@ var JLMK = (function () {
     if (cvFile) { score += 3; reasons.push('CV-named attachment'); }
     else if (anyDoc) { score += 1; reasons.push('document attachment'); }
 
-    var subject = msg.subject || '';
-    if (SUBJECT_STRONG.some(function (r) { return r.test(subject); })) { score += 2; reasons.push('subject: application keyword'); }
-    else if (SUBJECT_WEAK.some(function (r) { return r.test(subject); })) { score += 1; reasons.push('subject: job keyword'); }
+    var subject = plainLower(msg.subject);
+    var basvuruInContext = BASVURU.test(subject) && JOB_CONTEXT.test(subject);
+    if (basvuruInContext || SUBJECT_STRONG.some(function (r) { return r.test(subject); })) { score += 2; reasons.push('subject: application keyword'); }
+    else if (BASVURU.test(subject) || SUBJECT_WEAK.some(function (r) { return r.test(subject); })) { score += 1; reasons.push('subject: job keyword'); }
 
-    var body = (msg.body || '').slice(0, 5000);
+    var body = plainLower((msg.body || '').slice(0, 5000));
     var hits = BODY_PHRASES.filter(function (r) { return r.test(body); }).length;
     if (hits) { score += Math.min(hits, 2); reasons.push('body: ' + hits + ' application phrase(s)'); }
 
     if (NEGATIVE_SUBJECT.test(subject)) { score -= 3; reasons.push('subject: invoice/order/newsletter'); }
+    if (NEGATIVE_APPLICATION.test(subject)) { score -= 3; reasons.push('subject: visa/loan/scholarship/card… application'); }
     if (NEGATIVE_BODY.some(function (r) { return r.test(body); })) { score -= 3; reasons.push('body: newsletter or personal request'); }
 
     return { score: score, reasons: reasons };
@@ -365,8 +388,28 @@ var JLMK = (function () {
     return FREE_MAIL_DOMAINS.test(domainOf(email));
   }
 
-  /** "Ayşe Yılmaz <ayse@x.com>" -> "Ayşe"; falls back to '' when unknown. */
-  function extractFirstName(from) {
+  // Turkish casing without relying on Intl locales (not guaranteed in Apps Script).
+  function trLower(s) {
+    return String(s || '').replace(/I/g, 'ı').replace(/İ/g, 'i').toLowerCase();
+  }
+  function trUpper(s) {
+    return String(s || '').replace(/i/g, 'İ').replace(/ı/g, 'I').toUpperCase();
+  }
+  // Lower-casing that only maps İ → i (avoids "i̇") and leaves ASCII I as i.
+  function plainLower(s) {
+    return String(s || '').replace(/İ/g, 'i').toLowerCase();
+  }
+
+  var TR_LETTERS = /[ğüşıöçĞÜŞİÖÇ]/;
+
+  /**
+   * "Ayşe Yılmaz <ayse@x.com>" -> "Ayşe"; falls back to '' when unknown.
+   * Turkish lower-casing (I → ı) is used only when the name itself has Turkish letters,
+   * because ASCII capitals carry no dot information ("KADIR" is Kadir, not Kadır).
+   * @param {string} from
+   * @param {string} [lang] 'tr' makes a lower-case initial i become İ
+   */
+  function extractFirstName(from, lang) {
     var raw = String(from || '');
     var display = raw.indexOf('<') > 0 ? raw.slice(0, raw.indexOf('<')) : '';
     display = display.replace(/["']/g, '').trim();
@@ -374,8 +417,11 @@ var JLMK = (function () {
     if (display.indexOf(',') > 0) display = display.split(',')[1].trim(); // "Yılmaz, Ayşe"
     var first = display.split(/\s+/)[0];
     if (!first || first.length < 2) return '';
-    if (/^(hr|ik|İK|team|careers?|jobs?|recruiting|recruitment|talent|insan)$/i.test(first)) return ''; // role mailbox, not a person
-    return first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
+    if (/^(hr|ik|team|careers?|jobs?|recruiting|recruitment|talent|insan)$/i.test(plainLower(first))) return ''; // role mailbox, not a person
+    var turkish = TR_LETTERS.test(first);
+    var head = turkish || lang === 'tr' ? trUpper(first.charAt(0)) : first.charAt(0).toUpperCase();
+    var tail = turkish ? trLower(first.slice(1)) : plainLower(first.slice(1));
+    return head + tail;
   }
 
   /** Best-effort position title from the subject line. */
@@ -441,6 +487,7 @@ var JLMK = (function () {
     for (k in (settings || {})) if (settings[k] !== undefined && settings[k] !== null && settings[k] !== '') out[k] = settings[k];
     if (out.role !== ROLE.CANDIDATE) out.role = ROLE.EMPLOYER;
     out.maxFollowUps = Math.max(0, Math.min(MAX_FOLLOW_UPS, Number(out.maxFollowUps) || 0));
+    out.privacyNoticeUrl = /^https?:\/\/\S+$/i.test(String(out.privacyNoticeUrl)) ? String(out.privacyNoticeUrl) : '';
     return out;
   }
 
@@ -455,7 +502,8 @@ var JLMK = (function () {
    *   lastCandidateAt?: Date,    // most recent message from the candidate
    *   lastOwnReplyAt?: Date|null,// most recent message sent by us (any, manual or auto)
    *   statuses: string[],        // status labels currently on the thread
-   *   notifiedStatuses: string[],// statuses we already sent a template for
+   *   notifiedStatuses: string[],// statuses whose message was actually sent
+   *   draftedStatuses?: string[],// statuses with a draft still waiting to be sent
    *   skip: boolean
    * }} thread
    * @param {Date} now
@@ -466,23 +514,25 @@ var JLMK = (function () {
     settings = withDefaults(settings);
     if (thread.skip) return none('marked Skip');
 
-    var age = daysBetween(thread.receivedAt, now);
-    if (age > settings.lookbackDays) return none('older than lookback window');
-
     var notified = thread.notifiedStatuses || [];
+    var drafted = thread.draftedStatuses || [];
 
-    // 1) A status HR set manually always wins — send it once.
+    // 1) A status HR set manually always wins — once, however old the thread is.
     var order = [STATUS.FILLED, STATUS.REJECTED, STATUS.POOL, STATUS.IN_REVIEW];
     for (var i = 0; i < order.length; i++) {
       var st = order[i];
       if ((thread.statuses || []).indexOf(st) >= 0) {
         if (notified.indexOf(st) >= 0) return none('status ' + st + ' already sent');
+        if (drafted.indexOf(st) >= 0) return none('draft for ' + st + ' is waiting to be sent');
         return { action: 'reply', status: st, reason: 'status label ' + st };
       }
     }
 
-    // 2) Automatic "we received it" notice after silence.
+    // 2) Automatic "we received it" notice after silence — only within lookbackDays.
+    var age = daysBetween(thread.receivedAt, now);
+    if (age > settings.lookbackDays) return none('older than lookback window');
     if (notified.length) return none('candidate already informed');
+    if (drafted.indexOf(STATUS.RECEIVED) >= 0) return none('draft for Received is waiting to be sent');
     if (thread.lastOwnReplyAt && (!thread.lastCandidateAt || thread.lastOwnReplyAt >= thread.lastCandidateAt)) {
       return none('a human already replied');
     }
@@ -491,6 +541,20 @@ var JLMK = (function () {
   }
 
   function none(reason) { return { action: 'none', reason: reason }; }
+
+  /**
+   * What happened to a draft we prepared earlier?
+   * @param {{draftedAt:Date|null, lastCandidateAt?:Date|null, draftExists:boolean, ownSentDates:Date[]}} d
+   *        draftedAt = when we created it (null if unknown: then anything sent after the
+   *        candidate's last message counts); ownSentDates = our *sent* (non-draft) messages
+   * @return {'sent'|'pending'|'deleted'}
+   */
+  function resolveDraft(d) {
+    var since = d.draftedAt || d.lastCandidateAt || null;
+    var sent = (d.ownSentDates || []).some(function (t) { return !since || t >= since; });
+    if (sent) return 'sent';
+    return d.draftExists ? 'pending' : 'deleted';
+  }
 
   // ---------------------------------------------------------------------------
   // Texts
@@ -535,7 +599,7 @@ var JLMK = (function () {
   }
 
   function capitalizeFirst(s, lang) {
-    return s ? s.charAt(0).toLocaleUpperCase(lang === 'tr' ? 'tr' : 'en') + s.slice(1) : s;
+    return s ? (lang === 'tr' ? trUpper(s.charAt(0)) : s.charAt(0).toUpperCase()) + s.slice(1) : s;
   }
 
   /** "12 Ekim" / "October 12" in the requested language (English fallback). */
@@ -583,6 +647,7 @@ var JLMK = (function () {
       position: ctx.position || '',
       company: settings.companyName || (lang === 'tr' ? 'şirketimiz' : 'our company'),
       retentionMonths: settings.retentionMonths,
+      privacyNoticeUrl: settings.privacyNoticeUrl,
     }, {
       lang: lang,
       privacy: settings.includePrivacyNote,
@@ -599,9 +664,12 @@ var JLMK = (function () {
     DEFAULT_SETTINGS: DEFAULT_SETTINGS,
     JOB_BOARD_DOMAINS: JOB_BOARD_DOMAINS,
     NOT_APPLICATION_SENDERS: NOT_APPLICATION_SENDERS,
+    PREFILTER_WORDS: PREFILTER_WORDS,
     applicationSignals: applicationSignals,
+    prefilter: prefilter,
     classify: classify,
     decide: decide,
+    resolveDraft: resolveDraft,
     deliveryMode: deliveryMode,
     render: render,
     compose: compose,
@@ -613,6 +681,7 @@ var JLMK = (function () {
     detectLanguage: detectLanguage,
     extractEmail: extractEmail,
     extractFirstName: extractFirstName,
+    trLower: trLower,
     extractPosition: extractPosition,
     extractCompany: extractCompany,
     domainOf: domainOf,
@@ -820,16 +889,17 @@ var JLMKCandidate = (function () {
     var toHeader = [].concat(first.to || [])[0] || '';
     var recipient = recipientsOf({ to: first.to })[0] || '';
     var followUps = (thread.followUps || []).slice().sort(function (a, b) { return a - b; });
+    var language = J.detectLanguage((first.subject || '') + '\n' + (first.body || '').slice(0, 3000), settings.defaultLanguage);
 
     var app = {
       source: 'email',
       company: J.extractCompany({ to: toHeader, subject: first.subject }),
       position: J.extractPosition(first.subject),
       recipient: recipient,
-      recipientName: J.extractFirstName(toHeader),
+      recipientName: J.extractFirstName(toHeader, language),
       subject: first.subject || '',
       appliedAt: first.date,
-      language: J.detectLanguage((first.subject || '') + '\n' + (first.body || '').slice(0, 3000), settings.defaultLanguage),
+      language: language,
       status: STATUS.SENT,
       history: [{ status: STATUS.SENT, at: first.date, reason: 'application sent' }],
       lastOutboundAt: first.date,

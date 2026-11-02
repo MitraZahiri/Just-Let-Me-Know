@@ -125,7 +125,7 @@ test('classifyReply recognises our own employer templates', () => {
     assert.equal(r('Rejected'), 'rejected', lang);
     assert.equal(r('PositionFilled'), 'rejected', lang);
     assert.equal(r('Pool'), 'rejected', lang);
-    assert.equal(r('Received'), 'rejected', lang); // "can't move forward now, kept in pool"
+    assert.equal(r('Received'), 'acknowledged', lang); // fix1: neutral "it reached us, we'll let you know"
     assert.equal(r('InReview'), 'acknowledged', lang);
   }
 });
@@ -319,6 +319,11 @@ test('matchReply: by company named in an ATS mail', () => {
 test('matchReply false positives: unrelated personal mail, and mail older than the application', () => {
   assert.equal(C.matchReply({ from: 'friend@gmail.com', subject: 'Dinner?', body: 'See you at 8', date: day(5) }, apps), null);
   assert.equal(C.matchReply({ from: 'hr@globex.com', subject: 'Newsletter', body: '', date: day(0) }, apps), null);
+});
+
+test('fix2: a sent visa application is not a job application', () => {
+  const r = C.classifyOutgoing(application({ to: 'vize@konsolosluk.gov.tr', subject: 'Vize başvurusu', body: 'Belgelerim ektedir.', attachments: ['pasaport.pdf'] }));
+  assert.equal(r.isApplication, false);
 });
 
 test('summarize', () => {

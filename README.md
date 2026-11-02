@@ -41,13 +41,14 @@ Example (TR):
 
 ## Employer mode
 
-1. **Detects job applications** automatically (CV attachments, subject lines, typical phrases — English & Turkish). Newsletters, invoices, no-reply senders, job-board notifications, internal and personal mail are ignored.
-2. If nobody has answered after **7 days** (configurable), it replies in the same thread:
-   *"We received and saw your application. We can't move forward right now, but we've kept your CV in our talent pool."*
-3. HR can put a **status** on any application — *In review*, *Talent pool*, *Rejected*, *Position filled* — and the matching polite message goes out on the next run.
-4. Replies in the **candidate's language** (TR / EN), using their first name and the position from the subject.
-5. **Safe by default**: *draft mode* (it only prepares replies; you click send), daily limit, never touches threads a human already answered.
-6. Optional **KVKK / GDPR** note about data retention.
+1. **Detects job applications** automatically (CV attachments, subject lines, typical phrases — English & Turkish). Newsletters, invoices, no-reply senders, job-board notifications, internal and personal mail are ignored. A bare "başvuru" in the subject only counts together with a job word (pozisyon, iş, CV, staj, ilan…); visa, loan, scholarship, card, membership, licence, patent and tender applications are ignored.
+2. If nobody has answered after **7 days** (configurable), it replies in the same thread with a **neutral** notice:
+   *"Your application has reached us and is being reviewed. We will let you know the outcome."*
+   It never implies a result on its own — "can't move forward" / "talent pool" wording is only used when HR picks *Talent pool*, *Rejected* or *Position filled*.
+3. HR can put a **status** on any application — *In review*, *Talent pool*, *Rejected*, *Position filled* — and the matching polite message goes out on the next run, **however old the application is** (`lookbackDays` only limits the automatic notice).
+4. Replies in the **candidate's language** (TR / EN), using their first name (with correct Turkish casing: IŞIK → Işık) and the position from the subject.
+5. **Safe by default**: *draft mode* (it only prepares replies; you click send), daily limit, never touches threads a human already answered. Unsent drafts don't count as an answer, and a draft you delete is prepared again on the next run.
+6. Optional **KVKK / GDPR** note about data retention, with an optional link to your full privacy notice (`privacyNoticeUrl`).
 
 ```
 New mail ──► Is it a job application? ──no──► ignored
@@ -58,10 +59,15 @@ New mail ──► Is it a job application? ──no──► ignored
      ┌───────────────┼──────────────────────────────┐
      │ HR set a status label?                       │ nobody replied for N days?
      ▼                                              ▼
- send matching template once              send "we saw your application"
+ prepare matching template once           prepare "your application reached us"
  (Rejected / Pool / InReview / Filled)    (Received) once
      │                                              │
-     └──────────► label  JLMK/Notified/<status> ◄───┘
+     └──────────┬───────────────────────────────────┘
+                ▼
+   draft mode: JLMK/Drafted/<status> ──you send it──► JLMK/Notified/<status>
+                │ you delete it
+                └──► prepared again on the next run
+   send mode:  JLMK/Notified/<status> right away
 ```
 
 | Label (Gmail) / Category (Outlook) | Meaning |
@@ -72,9 +78,12 @@ New mail ──► Is it a job application? ──no──► ignored
 | `JLMK/Rejected` | Send a respectful rejection |
 | `JLMK/PositionFilled` | Send "the position has been filled" |
 | `JLMK/Skip` | Never touch this thread |
-| `JLMK/Notified/<status>` | Set by the tool — that message was already sent/drafted |
+| `JLMK/Drafted/<status>` | Set by the tool — a draft is waiting for you to send it |
+| `JLMK/Notified/<status>` | Set by the tool once a **sent** message from you is seen in the thread |
 
 A status message is sent even if the "Received" notice already went out (e.g. *Received* on day 7, *Position filled* on day 30), but each status is sent only once.
+
+Large mailboxes: the Gmail add-on pages through all matching threads and stops before Apps Script's 6-minute limit; it saves where it stopped and continues automatically a minute later.
 
 ---
 
@@ -124,7 +133,9 @@ Outlook add-ins can't run in the background, so this is a small Node.js script (
    ```
    or cron: `0 9 * * * cd /path/to/Just-Let-Me-Know && npm run outlook:run >> jlmk.log 2>&1`
 
-In Outlook, use **categories** named `JLMK: Rejected`, `JLMK: Pool`, `JLMK: InReview`, `JLMK: PositionFilled`, `JLMK: Skip` on any message of the conversation.
+In Outlook, use **categories** named `JLMK: Rejected`, `JLMK: Pool`, `JLMK: InReview`, `JLMK: PositionFilled`, `JLMK: Skip` on any message of the conversation. The tool adds `JLMK: Drafted <status>` / `JLMK: Notified <status>` the same way as the Gmail labels.
+
+Only **Inbox (with all its subfolders)** and **Sent Items** are read — Junk and Deleted Items are never touched.
 
 ---
 
@@ -144,12 +155,13 @@ In Outlook, use **categories** named `JLMK: Rejected`, `JLMK: Pool`, `JLMK: InRe
 | `defaultLanguage` | `en` | When the language can't be detected |
 | `includePrivacyNote` | `true` | Employer: adds the KVKK/GDPR retention sentence |
 | `retentionMonths` | `12` | Used in that sentence |
+| `privacyNoticeUrl` | – | Optional `http(s)://` link to your full KVKK/GDPR notice, appended to that sentence |
 
 ### Texts and languages
 
 All wording lives in [`core/i18n/`](core/i18n/): `en.js` (reference), `tr.js`, and skeletons for `de.js` and `ar.js` — every `null` there falls back to English until someone translates it. Tone rule: **warm, short, never blaming.**
 
-Placeholders: `{{name}}`, `{{position}}`, `{{company}}`, `{{appliedDate}}`, `{{retentionMonths}}`.
+Placeholders: `{{name}}`, `{{position}}`, `{{company}}`, `{{appliedDate}}`, `{{retentionMonths}}`, `{{privacyNoticeUrl}}`.
 Sections: `{{#position}}for the {{position}} role{{/position}}` is only rendered when the position is known.
 
 To change the wording for your own account, pass an override with the same shape (only the keys you want):
@@ -177,7 +189,7 @@ outlook/           Microsoft Graph runner
 ```
 
 ```bash
-npm test    # core + candidate tests, Gmail engine against a fake mailbox, Core.js freshness check
+npm test    # core + candidate tests, Gmail engine and Outlook runner against fake mailboxes, Core.js freshness check
 ```
 
 Platform code stays a thin layer: it converts Gmail/Graph messages into plain objects and applies what `core/` decides.
@@ -218,10 +230,13 @@ PRs welcome — especially translations and better detection patterns. Every new
 
 ### İşveren modu
 
-- Gelen başvuruları tanır. **7 gün** içinde kimse cevap vermezse adaya aynı yazışmanın içinden kibar bir mesaj gönderir: *"Başvurunuzu aldık ve inceledik. Şu an ilerleyemiyoruz ama özgeçmişinizi aday havuzumuzda tutuyoruz."*
-- İK bir başvuruya **Değerlendiriliyor / Havuz / Olumsuz / Pozisyon doldu** etiketini koyarsa, o duruma uygun mesaj bir sonraki çalışmada gider.
-- Adayın diline göre (TR/EN) ve adıyla hitap ederek yazar. İsterseniz KVKK notu da ekler.
-- Varsayılan olarak **taslak modunda** çalışır. Otomatik gönderim ancak ayarlardan açıkça açılırsa çalışır, o durumda da günlük sınır vardır. Birinin daha önce cevap verdiği yazışmalara asla dokunmaz.
+- Gelen başvuruları tanır. Konuda tek başına "başvuru" kelimesi yetmez; yanında pozisyon, iş, CV, staj, ilan gibi iş bağlamında bir kelime de olmalıdır. Vize, kredi, burs, kart, abonelik, üyelik, ruhsat, patent ve ihale başvuruları dikkate alınmaz.
+- **7 gün** içinde kimse cevap vermezse adaya aynı yazışmanın içinden **nötr** bir mesaj gider: *"Başvurunuz bize ulaştı, değerlendirme süreci devam ediyor; sonucu size bildireceğiz."* Bu mesaj tek başına bir sonuç ima etmez. "İlerleyemiyoruz / havuz" ifadeleri yalnızca İK *Havuz*, *Olumsuz* ya da *Pozisyon doldu* seçtiğinde kullanılır.
+- İK bir başvuruya **Değerlendiriliyor / Havuz / Olumsuz / Pozisyon doldu** etiketini koyarsa, o duruma uygun mesaj bir sonraki çalışmada gider. Başvuru ne kadar eski olursa olsun bu geçerlidir; `lookbackDays` yalnızca otomatik bildirimi sınırlar.
+- Adayın diline göre (TR/EN) yazar ve adıyla, Türkçe büyük/küçük harf kurallarına uygun şekilde hitap eder (IŞIK → Işık). İsterseniz KVKK notunu da ekler. `privacyNoticeUrl` ayarı doluysa nota aydınlatma metninin linki de eklenir.
+- Varsayılan olarak **taslak modunda** çalışır. Taslak hazırlanınca yazışmaya `JLMK/Drafted/<durum>` etiketi konur. `JLMK/Notified/<durum>` etiketi ancak sizden giden, gönderilmiş bir mesaj görüldüğünde eklenir. Taslağı silerseniz bir sonraki çalışmada yeniden hazırlanır, gönderilmemiş taslaklar da cevap sayılmaz.
+- Otomatik gönderim ancak ayarlardan açıkça açılırsa çalışır ve o durumda da günlük sınır vardır. Birinin daha önce cevap verdiği yazışmalara asla dokunmaz.
+- Outlook'ta yalnızca Gelen Kutusu (alt klasörleriyle birlikte) ve Gönderilmiş Öğeler okunur; Gereksiz ve Silinmiş Öğeler klasörlerine dokunulmaz. Gmail'de çok büyük kutular sayfa sayfa taranır. Süre sınırı yaklaşınca tarama kaldığı yeri kaydeder ve bir dakika sonra kendiliğinden devam eder.
 
 ### Ayarlar ve diller
 

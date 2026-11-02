@@ -16,11 +16,13 @@ JLMK_I18N.en = {
     greeting: 'Dear {{name}},',
     greetingNoName: 'Hello,',
     signoff: 'Kind regards,',
-    privacy: 'Your data is stored only for recruitment purposes for up to {{retentionMonths}} months. You can ask us to delete it at any time by replying to this email.',
+    privacy: 'Your data is stored only for recruitment purposes for up to {{retentionMonths}} months. You can ask us to delete it at any time by replying to this email.' +
+      '{{#privacyNoticeUrl}} Full privacy notice: {{privacyNoticeUrl}}{{/privacyNoticeUrl}}',
+    // Neutral on purpose: no outcome is implied before HR picks a status.
     Received:
-      'Thank you for your application{{#position}} for the {{position}} position{{/position}}. We want to let you know that it reached us and has been seen by our team.\n\n' +
-      'We are not able to move forward with it right now, but we would like to keep your CV in our talent pool and will reach out to you if a suitable opportunity opens up.\n\n' +
-      'We appreciate your interest in {{company}} and wish you the best in your search.',
+      'Thank you for your application{{#position}} for the {{position}} position{{/position}}. We want to let you know that it has reached us and our team is reviewing it.\n\n' +
+      'The evaluation is still in progress, and we will let you know the outcome.\n\n' +
+      'We appreciate your interest in {{company}}.',
     InReview:
       'Thank you for your application{{#position}} for the {{position}} position{{/position}}. Your application is currently being reviewed by our team. ' +
       'We will get back to you as soon as we have an update — we did not want to leave you without news in the meantime.',
