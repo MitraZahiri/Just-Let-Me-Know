@@ -1,0 +1,34 @@
+{
+  "timeZone": "Europe/Istanbul",
+  "runtimeVersion": "V8",
+  "exceptionLogging": "STACKDRIVER",
+  "oauthScopes": [
+    "https://mail.google.com/",
+    "https://www.googleapis.com/auth/gmail.addons.execute",
+    "https://www.googleapis.com/auth/gmail.addons.current.message.readonly",
+    "https://www.googleapis.com/auth/script.scriptapp",
+    "https://www.googleapis.com/auth/script.locale",
+    "https://www.googleapis.com/auth/userinfo.email"
+  ],
+  "addOns": {
+    "common": {
+      "name": "Just Let Me Know",
+      "logoUrl": "https://www.gstatic.com/images/icons/material/system/2x/mark_email_read_black_48dp.png",
+      "layoutProperties": {
+        "primaryColor": "#3f6ad8"
+      },
+      "homepageTrigger": {
+        "runFunction": "onHomepage",
+        "enabled": true
+      }
+    },
+    "gmail": {
+      "contextualTriggers": [
+        {
+          "unconditional": {},
+          "onTriggerFunction": "onGmailMessage"
+        }
+      ]
+    }
+  }
+}

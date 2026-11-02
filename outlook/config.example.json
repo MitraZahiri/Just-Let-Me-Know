@@ -1,0 +1,18 @@
+{
+  "clientId": "PASTE-YOUR-AZURE-APP-CLIENT-ID",
+  "tenantId": "common",
+  "aliases": [],
+  "settings": {
+    "companyName": "Acme Ltd.",
+    "senderName": "Acme HR Team",
+    "waitDays": 7,
+    "lookbackDays": 60,
+    "mode": "draft",
+    "dailyLimit": 50,
+    "ownDomains": ["acme.com"],
+    "defaultLanguage": "en",
+    "includePrivacyNote": true,
+    "retentionMonths": 12
+  },
+  "customTemplates": null
+}

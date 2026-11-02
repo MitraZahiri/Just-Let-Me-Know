@@ -1,0 +1,8 @@
+node_modules/
+outlook/config.json
+outlook/.token-cache.json
+outlook/.state.json
+gmail/.clasp.json
+.clasprc.json
+*.log
+.DS_Store

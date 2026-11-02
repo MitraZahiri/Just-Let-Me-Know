@@ -1,0 +1,25 @@
+{
+  "name": "just-let-me-know",
+  "version": "0.1.0",
+  "description": "Every job applicant deserves an answer. Auto-replies to unanswered job applications in Gmail and Outlook.",
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MitraZahiri/Just-Let-Me-Know.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test core/jlmk-core.test.js gmail/engine.test.js && node scripts/build-gmail.js --check",
+    "build:gmail": "node scripts/build-gmail.js",
+    "push:gmail": "node scripts/build-gmail.js && cd gmail && clasp push",
+    "outlook:login": "node outlook/jlmk-outlook.js --login",
+    "outlook:preview": "node outlook/jlmk-outlook.js --preview",
+    "outlook:run": "node outlook/jlmk-outlook.js --run"
+  },
+  "dependencies": {
+    "@azure/msal-node": "^3.8.10"
+  }
+}
