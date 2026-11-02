@@ -2,22 +2,52 @@
 
 > *"Did you get my CV? Just let me know."*
 
-Candidates send applications and then hear **nothing** — not a yes, not a no.
-**Just Let Me Know** fixes that from the employer's side, inside the mailbox the CVs already arrive in:
+**No application should go unanswered.** Just Let Me Know works on both sides of a job application, inside the mailbox you already use:
 
-- 🔎 **Detects job applications** automatically (CV attachments, subject lines, typical phrases — English & Turkish).
-- ⏳ If nobody has answered after **7 days** (configurable), it replies in the same thread:
-  *"We received and saw your application. We can't move forward right now, but we've kept your CV in our talent pool."*
-- 🏷️ HR can put a **status** on any application — *In review*, *Talent pool*, *Rejected*, *Position filled* — and the matching polite message goes out on the next run.
-- 🌍 Replies in the **candidate's language** (TR / EN), using their first name and the position from the subject.
-- 🛡️ **Safe by default**: starts in *draft mode* (it only prepares replies; you click send), has a daily limit, never touches threads a human already answered, and skips newsletters, no-reply senders, job-board notifications and internal mail.
-- ⚖️ Optional **KVKK / GDPR** note about data retention.
+| | **Candidate mode** | **Employer mode** |
+|---|---|---|
+| For | People applying for jobs | HR / anyone receiving CVs |
+| What it does | Finds the applications you sent, tracks what happened to each one, prepares a polite follow-up **draft** when nobody answers | Finds incoming applications and answers them — automatically after N days of silence, or with the status HR picks |
+| Sends on its own? | **Never.** You review and send every follow-up yourself | Only if you explicitly switch on *send* mode; drafts by default |
+| Status | 🧱 Logic ready & tested in `core/` — Gmail sidebar and Sheets export are the next step | ✅ Gmail add-on and Outlook script available |
 
-Works with **Gmail / Google Workspace** (add-on, no server) and **Outlook / Microsoft 365** (small scheduled script).
+🔒 **Your mail never leaves your account.** No server, no analytics, no tracking. Everything runs inside your own Google account (Apps Script) or on your own computer (Outlook script).
 
 ---
 
-## How it works
+## Candidate mode
+
+*Core logic is finished and tested; the Gmail integration comes next (see [Roadmap](#roadmap)).*
+
+1. **Detects applications in your Sent mail** — CV attachments, "application / başvuru / özgeçmiş" wording, cover-letter phrases — and **job-board confirmations** ("Your application was sent to Acme" from LinkedIn, Kariyer.net, Indeed).
+2. Keeps a record per application: **company, position, date, status**.
+
+   | Status | Meaning |
+   |---|---|
+   | `Sent` | Application sent |
+   | `Acknowledged` | They confirmed receipt (or replied with a question) |
+   | `NoResponse` | No answer after `waitDays` (default 7) |
+   | `Rejected` | A no — including the polite "kept in our talent pool" kind |
+   | `Interview` | Interview / call invitation |
+
+3. **Matches answers to the right application** — same thread first, otherwise by the sender's company domain, then by the company named in the mail (e.g. ATS mails from Greenhouse). Out-of-office replies and words quoted from your own email don't count.
+4. **Follow-up drafts**: after `waitDays` of silence a short, warm reminder is prepared **as a draft in the same thread**; a second one after another `followUpGapDays`. **Never more than 2**, never after a rejection or interview invite, never when they wrote last (then it's your turn), never for job-board applications (no address to write to) or bounced emails.
+
+Example (TR):
+
+> Merhaba,
+>
+> 12 Ekim tarihinde Yazılım Mühendisi pozisyonu için Aselsan şirketine başvuruda bulunmuştum; süreç hakkında kısaca bilgi almak istedim. …
+
+## Employer mode
+
+1. **Detects job applications** automatically (CV attachments, subject lines, typical phrases — English & Turkish). Newsletters, invoices, no-reply senders, job-board notifications, internal and personal mail are ignored.
+2. If nobody has answered after **7 days** (configurable), it replies in the same thread:
+   *"We received and saw your application. We can't move forward right now, but we've kept your CV in our talent pool."*
+3. HR can put a **status** on any application — *In review*, *Talent pool*, *Rejected*, *Position filled* — and the matching polite message goes out on the next run.
+4. Replies in the **candidate's language** (TR / EN), using their first name and the position from the subject.
+5. **Safe by default**: *draft mode* (it only prepares replies; you click send), daily limit, never touches threads a human already answered.
+6. Optional **KVKK / GDPR** note about data retention.
 
 ```
 New mail ──► Is it a job application? ──no──► ignored
@@ -48,7 +78,7 @@ A status message is sent even if the "Received" notice already went out (e.g. *R
 
 ---
 
-## Gmail / Google Workspace
+## Install — Gmail / Google Workspace (employer mode)
 
 Runs entirely in your Google account as an Apps Script add-on — no server, free.
 
@@ -72,7 +102,7 @@ npm run push:gmail
 
 > Gmail sending quota: ~100 recipients/day on free Gmail, ~1500 on Workspace. Keep *Max replies per day* below that.
 
-## Outlook / Microsoft 365
+## Install — Outlook / Microsoft 365 (employer mode)
 
 Outlook add-ins can't run in the background, so this is a small Node.js script (Node 18+) using Microsoft Graph that you schedule once a day.
 
@@ -102,55 +132,68 @@ In Outlook, use **categories** named `JLMK: Rejected`, `JLMK: Pool`, `JLMK: InRe
 
 | Setting | Default | |
 |---|---|---|
-| `waitDays` | `7` | Days of silence before the automatic notice |
-| `mode` | `draft` | `draft` = prepare replies for you to send, `send` = send automatically |
+| `role` | `employer` | `candidate` or `employer` |
+| `waitDays` | `7` | Days of silence before acting (employer notice / first follow-up) |
+| `followUpGapDays` | `7` | Candidate: days between the first and second follow-up |
+| `maxFollowUps` | `2` | Candidate: 0–2, cannot be set higher |
+| `mode` | `draft` | Employer only: `draft` = prepare replies, `send` = send automatically. **Candidate mode always drafts.** |
 | `dailyLimit` | `50` | Max replies per day |
 | `lookbackDays` | `60` | Ignore applications older than this |
 | `companyName`, `senderName` | – | Used in the text and signature |
-| `ownDomains` | `[]` | Your company domains — internal mail is never treated as an application |
+| `ownDomains` | `[]` | Your own domains — internal mail is never treated as an application |
 | `defaultLanguage` | `en` | When the language can't be detected |
-| `includePrivacyNote` | `true` | Adds the KVKK/GDPR retention sentence |
+| `includePrivacyNote` | `true` | Employer: adds the KVKK/GDPR retention sentence |
 | `retentionMonths` | `12` | Used in that sentence |
 
-### Custom wording
+### Texts and languages
 
-Override any part of [the default templates](core/jlmk-core.js) (`TEMPLATES`) — same shape, only the keys you want:
+All wording lives in [`core/i18n/`](core/i18n/): `en.js` (reference), `tr.js`, and skeletons for `de.js` and `ar.js` — every `null` there falls back to English until someone translates it. Tone rule: **warm, short, never blaming.**
+
+Placeholders: `{{name}}`, `{{position}}`, `{{company}}`, `{{appliedDate}}`, `{{retentionMonths}}`.
+Sections: `{{#position}}for the {{position}} role{{/position}}` is only rendered when the position is known.
+
+To change the wording for your own account, pass an override with the same shape (only the keys you want):
 
 ```json
-{ "en": { "Received": "Thanks for applying to {{company}}! ..." },
-  "tr": { "signoff": "Sevgiler," } }
+{ "en": { "employer": { "Received": "Thanks for applying to {{company}}! ..." } },
+  "tr": { "candidate": { "signoff": "Sevgiler," } } }
 ```
 
-Placeholders: `{{name}}`, `{{position}}`, `{{company}}`, `{{retentionMonths}}`.
-Outlook: put it in `customTemplates` in `config.json`. Gmail: *Project Settings → Script properties* is per-script, so instead run once in the editor: `PropertiesService.getUserProperties().setProperty('JLMK_TEMPLATES', JSON.stringify({...}))`.
+Outlook: put it in `customTemplates` in `config.json`. Gmail: run once in the script editor:
+`PropertiesService.getUserProperties().setProperty('JLMK_TEMPLATES', JSON.stringify({...}))`.
 
 ---
 
 ## Project layout
 
 ```
-core/       platform-independent logic (classifier, decision engine, templates) + tests
-gmail/src/  Google Apps Script add-on (Core.js is generated from core/ — run npm run build:gmail)
-outlook/    Microsoft Graph runner
+core/
+  jlmk-core.js     shared helpers, application signals, employer decisions, text rendering
+  candidate.js     candidate side: sent-mail detection, reply classification, matching, follow-ups
+  i18n/            texts per language (en, tr, de*, ar*)   *skeleton
+  *.test.js        tests
+gmail/src/         Google Apps Script add-on (Core.js is generated — run npm run build:gmail)
+outlook/           Microsoft Graph runner
 ```
 
 ```bash
-npm test    # unit tests + Gmail engine against a fake mailbox
+npm test    # core + candidate tests, Gmail engine against a fake mailbox, Core.js freshness check
 ```
+
+Platform code stays a thin layer: it converts Gmail/Graph messages into plain objects and applies what `core/` decides.
 
 ## Roadmap
 
-- [ ] Outlook add-in pane with one-click status buttons (like the Gmail sidebar)
-- [ ] More languages (DE, FR, ES, AR…)
-- [ ] Shared team mailboxes (`jobs@…`) and Google Groups
-- [ ] Optional "reached the interview stage" / "offer" templates
-- [ ] Weekly summary to HR: how many candidates were answered
-- [ ] Integrations with ATS tools (Greenhouse, Lever, Kariyer.net)
-- [ ] Candidate side: a polite follow-up reminder if *you* haven't heard back
+- [x] **Stage 1 — Core:** candidate/employer role, sent-mail detection, status tracking, reply matching, follow-up rules, language files
+- [ ] **Stage 2 — Candidate mode in Gmail:** scan Sent mail, follow-up drafts, sidebar summary card, export to Google Sheets
+- [ ] **Stage 3 — Employer upgrades:** KVKK disclosure / GDPR Art. 13 notice in the default template, weekly HR summary ("you answered X candidates this week, average response time Y days")
+- [ ] Candidate mode for Outlook
+- [ ] Outlook add-in pane with one-click status buttons
+- [ ] German and Arabic translations (skeletons ready in `core/i18n/`)
 
 ## Contributing
 
-PRs welcome — especially new languages and better detection patterns (add a test in `core/jlmk-core.test.js`).
+PRs welcome — especially translations and better detection patterns. Every new rule needs a test in `core/`, **including a false-positive test** (newsletter, invoice, job-board notification, personal mail).
 
 ## License
 
@@ -160,13 +203,29 @@ PRs welcome — especially new languages and better detection patterns (add a te
 
 ## 🇹🇷 Türkçe
 
-**Just Let Me Know**, iş başvurularına hiç dönüş yapılmaması sorununu işveren tarafında çözer.
-Gmail ya da Outlook kutusuna gelen CV'leri kendisi tanır. **7 gün** içinde kimse cevap vermezse adaya aynı yazışma içinden kibar bir mesaj gönderir:
-*"Başvurunuzu aldık ve inceledik, şu an ilerleyemiyoruz ama özgeçmişinizi aday havuzumuzda tutuyoruz."*
+**Hiçbir başvuru cevapsız kalmasın.** Just Let Me Know iş başvurusunun iki tarafında da, zaten kullandığınız e-posta kutusunun içinde çalışır.
 
+🔒 **Mailleriniz hesabınızdan dışarı çıkmaz.** Sunucu, analitik ya da takip yok. Her şey kendi Google hesabınızda (Apps Script) ya da kendi bilgisayarınızda (Outlook betiği) çalışır.
+
+### Aday modu
+
+*Mantık hazır ve test edildi (`core/`). Gmail kenar çubuğu ve Google Sheets'e aktarma bir sonraki aşamada geliyor.*
+
+- **Gönderilmiş kutunuzdaki başvuruları bulur.** CV ekine, "başvuru / özgeçmiş" gibi ifadelere ve kariyer sitesi onaylarına bakar (LinkedIn, Kariyer.net, Indeed).
+- Her başvuru için **şirket, pozisyon, tarih ve durum** kaydı tutar. Durumlar: *Gönderildi*, *Alındı onayı geldi*, *Cevap yok*, *Olumsuz* ve *Mülakat*.
+- **Gelen cevabı doğru başvuruyla eşleştirir.** Önce aynı yazışmaya, sonra gönderenin şirket alan adına, en son da mailde geçen şirket adına bakar. Otomatik "ofis dışındayım" cevapları ve sizin alıntılanmış mailiniz sayılmaz.
+- 7 gün sessizlik olursa aynı yazışmanın içinde kısa ve kibar bir **hatırlatma taslağı** hazırlar. **En fazla 2 hatırlatma** olur ve **hiçbiri otomatik gönderilmez**. Olumsuz cevap ya da mülakat daveti geldiyse, son yazan karşı tarafsa (yani sıra sizdeyse), başvuru kariyer sitesi üzerinden yapıldıysa ya da mail adrese ulaşmadıysa hatırlatma hazırlanmaz.
+
+### İşveren modu
+
+- Gelen başvuruları tanır. **7 gün** içinde kimse cevap vermezse adaya aynı yazışmanın içinden kibar bir mesaj gönderir: *"Başvurunuzu aldık ve inceledik. Şu an ilerleyemiyoruz ama özgeçmişinizi aday havuzumuzda tutuyoruz."*
 - İK bir başvuruya **Değerlendiriliyor / Havuz / Olumsuz / Pozisyon doldu** etiketini koyarsa, o duruma uygun mesaj bir sonraki çalışmada gider.
 - Adayın diline göre (TR/EN) ve adıyla hitap ederek yazar. İsterseniz KVKK notu da ekler.
-- Varsayılan olarak **taslak modunda** çalışır: yanıtları hazırlar, göndermeyi siz yaparsınız. Ayarlardan *otomatik gönder* moduna geçebilirsiniz.
-- Daha önce birinin cevap verdiği yazışmalara, bültenlere, no-reply adreslere ve kariyer sitesi bildirimlerine dokunmaz.
+- Varsayılan olarak **taslak modunda** çalışır. Otomatik gönderim ancak ayarlardan açıkça açılırsa çalışır, o durumda da günlük sınır vardır. Birinin daha önce cevap verdiği yazışmalara asla dokunmaz.
 
-Kurulum adımları yukarıda: Gmail için *Gmail / Google Workspace*, Outlook için *Outlook / Microsoft 365* bölümüne bakın.
+### Ayarlar ve diller
+
+- `role`: `candidate` (aday) ya da `employer` (işveren). Varsayılanı şimdilik `employer`, çünkü aday modunun Gmail arayüzü henüz yok.
+- Metinler [`core/i18n/`](core/i18n/) klasöründe: Türkçe ve İngilizce tam, Almanca ve Arapça iskelet halinde (çevrilene kadar İngilizce gösterilir). Ton kuralı: **sıcak, kısa, suçlamasız.**
+
+Kurulum adımları yukarıda: Gmail için *Install — Gmail*, Outlook için *Install — Outlook* bölümüne bakın.

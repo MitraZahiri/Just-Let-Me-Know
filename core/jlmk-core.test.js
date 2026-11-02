@@ -142,6 +142,122 @@ test('render: all statuses in both languages produce clean text', () => {
 });
 
 test('render: custom template override', () => {
-  const body = JLMK.render('Received', { language: 'en' }, {}, { en: { Received: 'Custom text for {{company}}.' } });
+  const body = JLMK.render('Received', { language: 'en' }, {}, { en: { employer: { Received: 'Custom text for {{company}}.' } } });
   assert.match(body, /Custom text for our company\./);
+});
+
+test('render: an English override also applies to a skeleton language', () => {
+  const body = JLMK.render('Received', { language: 'de' }, {}, { en: { employer: { Received: 'Custom.' } } });
+  assert.match(body, /Custom\./);
+});
+
+// --- false positives (employer side, incoming) ------------------------------
+
+test('classify false positive: newsletter about careers', () => {
+  const r = JLMK.classify({
+    from: 'Career Weekly <hello@careerweekly.io>',
+    subject: 'Your weekly career digest: 10 CV tips',
+    body: 'How to write a resume that stands out... Click here to unsubscribe.',
+    attachments: [],
+  });
+  assert.equal(r.isApplication, false);
+});
+
+test('classify false positive: invoice even with a "position" word', () => {
+  const r = JLMK.classify({
+    from: 'muhasebe@tedarikci.com.tr',
+    subject: 'Fatura - Ekim dönemi pozisyon bazlı hizmet bedeli',
+    body: 'Ekte faturanızı bulabilirsiniz.',
+    attachments: ['fatura_ekim.pdf'],
+  });
+  assert.equal(r.isApplication, false);
+});
+
+test('classify false positive: personal mail asking to check a CV', () => {
+  const r = JLMK.classify({
+    from: 'Deniz <deniz@gmail.com>',
+    subject: 'CV',
+    body: 'Selam, CV\'me bir bakar mısın? Fikrini merak ediyorum.',
+    attachments: ['Deniz_CV.pdf'],
+  });
+  assert.equal(r.isApplication, false);
+});
+
+test('classify false positive: personal mail with a PDF', () => {
+  const r = JLMK.classify({
+    from: 'Mom <mom@hotmail.com>',
+    subject: 'Tatil planı',
+    body: 'Uçak biletlerini ekledim.',
+    attachments: ['bilet.pdf'],
+  });
+  assert.equal(r.isApplication, false);
+});
+
+// --- roles, delivery, texts --------------------------------------------------
+
+test('deliveryMode: draft unless employer explicitly chose send', () => {
+  assert.equal(JLMK.deliveryMode({}), 'draft');
+  assert.equal(JLMK.deliveryMode({ mode: 'send' }), 'send');
+  assert.equal(JLMK.deliveryMode({ mode: 'SEND' }), 'draft');
+  assert.equal(JLMK.deliveryMode({ role: 'candidate', mode: 'send' }), 'draft');
+});
+
+test('withDefaults: role and maxFollowUps are clamped', () => {
+  assert.equal(JLMK.withDefaults({}).role, 'employer');
+  assert.equal(JLMK.withDefaults({ role: 'nonsense' }).role, 'employer');
+  assert.equal(JLMK.withDefaults({ role: 'candidate' }).role, 'candidate');
+  assert.equal(JLMK.withDefaults({ maxFollowUps: 9 }).maxFollowUps, 2);
+  assert.equal(JLMK.withDefaults({ maxFollowUps: -1 }).maxFollowUps, 0);
+});
+
+test('fill: sections and inverted sections', () => {
+  assert.equal(JLMK.fill('a{{#x}} [{{x}}]{{/x}}b', { x: 'X' }), 'a [X]b');
+  assert.equal(JLMK.fill('a{{#x}} [{{x}}]{{/x}}b', { x: '' }), 'ab');
+  assert.equal(JLMK.fill('{{^x}}none{{/x}}', {}), 'none');
+  assert.equal(JLMK.fill('{{^x}}none{{/x}}', { x: 1 }), '');
+});
+
+test('i18n: every language has exactly the keys of en.js', () => {
+  const i18n = require('./i18n');
+  const shape = (o) => Object.keys(o).sort().map((k) =>
+    o[k] && typeof o[k] === 'object' && !Array.isArray(o[k]) && k !== 'meta' ? k + '{' + shape(o[k]) + '}' : k).join(',');
+  for (const code of Object.keys(i18n)) {
+    assert.equal(shape(i18n[code]), shape(i18n.en), code);
+  }
+});
+
+test('i18n: skeleton languages fall back to English, AR is right-to-left', () => {
+  const langs = Object.fromEntries(JLMK.languages().map((l) => [l.code, l]));
+  assert.equal(langs.de.complete, false);
+  assert.equal(langs.ar.dir, 'rtl');
+  assert.equal(JLMK.text('de', 'employer.signoff'), 'Kind regards,');
+  assert.equal(JLMK.normalizeLanguage('xx'), 'en');
+});
+
+test('formatDate', () => {
+  const d = new Date(2026, 9, 12);
+  assert.equal(JLMK.formatDate(d, 'tr'), '12 Ekim');
+  assert.equal(JLMK.formatDate(d, 'en'), 'October 12');
+  assert.equal(JLMK.formatDate(d, 'de'), 'October 12');
+});
+
+test('extractCompany', () => {
+  assert.equal(JLMK.extractCompany({ to: 'HR <hr@acme.com>' }), 'Acme');
+  assert.equal(JLMK.extractCompany({ to: 'kariyer@careers.trendyol.com' }), 'Trendyol');
+  assert.equal(JLMK.extractCompany({ to: 'ik@aselsan.com.tr' }), 'Aselsan');
+  assert.equal(JLMK.extractCompany({ to: 'jobs@bbc.co.uk' }), 'Bbc');
+  assert.equal(JLMK.extractCompany({ to: 'recruiter@gmail.com', subject: 'Application for Data Analyst at Globex' }), 'Globex');
+  assert.equal(JLMK.extractCompany({ to: 'recruiter@gmail.com', subject: 'My CV' }), '');
+});
+
+test('extractFirstName ignores role mailboxes', () => {
+  assert.equal(JLMK.extractFirstName('HR Team <hr@acme.com>'), '');
+  assert.equal(JLMK.extractFirstName('Careers <c@acme.com>'), '');
+  assert.equal(JLMK.extractFirstName('Jane Doe <jane@acme.com>'), 'Jane');
+});
+
+test('extractPosition: more subject shapes', () => {
+  assert.equal(JLMK.extractPosition('Application for Data Analyst at Globex'), 'Data Analyst');
+  assert.equal(JLMK.extractPosition('Yazılım Mühendisi Pozisyonu Başvurusu'), 'Yazılım Mühendisi');
+  assert.equal(JLMK.extractPosition('Başvurusu: İK Uzmanı'), 'İK Uzmanı');
 });

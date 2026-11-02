@@ -23,7 +23,7 @@ function buildHomeCard(notice) {
       .setWrapText(true))
     .addWidget(CardService.newDecoratedText()
       .setTopLabel('Mode')
-      .setText(s.mode === 'send' ? '📤 Sends replies' : '📝 Creates drafts only (safe)')
+      .setText(JLMK.deliveryMode(s) === 'send' ? '📤 Sends replies' : '📝 Creates drafts only (safe)')
       .setWrapText(true))
     .addWidget(CardService.newButtonSet()
       .addButton(CardService.newTextButton()
@@ -113,7 +113,7 @@ function handleDisable() { disableSchedule(); return refreshHome('Daily run turn
 
 function handleRunNow() {
   var r = run({ dryRun: false });
-  var verb = getSettings().mode === 'send' ? 'sent' : 'drafted';
+  var verb = JLMK.deliveryMode(getSettings()) === 'send' ? 'sent' : 'drafted';
   return refreshHome(r.note || (r.applications + ' applications found, ' + r.actions.length + ' replies ' + verb + '.'));
 }
 

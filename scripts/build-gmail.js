@@ -1,12 +1,23 @@
-// Copies the shared core into the Apps Script project (Apps Script has no imports).
+// Joins the shared core into one Apps Script file (Apps Script has no imports,
+// and a single file keeps the load order fixed).
 // `--check` fails if the copy is out of date (used in CI).
 const fs = require('node:fs');
 const path = require('node:path');
 
-const src = path.join(__dirname, '..', 'core', 'jlmk-core.js');
-const dest = path.join(__dirname, '..', 'gmail', 'src', 'Core.js');
-const banner = '// GENERATED from core/jlmk-core.js by `npm run build:gmail` — do not edit here.\n';
-const expected = banner + fs.readFileSync(src, 'utf8');
+const root = path.join(__dirname, '..');
+const sources = [
+  'core/i18n/en.js',
+  'core/i18n/tr.js',
+  'core/i18n/de.js',
+  'core/i18n/ar.js',
+  'core/jlmk-core.js',
+  'core/candidate.js',
+];
+const dest = path.join(root, 'gmail', 'src', 'Core.js');
+const banner = '// GENERATED from core/ by `npm run build:gmail` — do not edit here.\n';
+const expected = banner + sources
+  .map((f) => `\n// ===== ${f} =====\n` + fs.readFileSync(path.join(root, f), 'utf8'))
+  .join('');
 
 if (process.argv.includes('--check')) {
   const actual = fs.existsSync(dest) ? fs.readFileSync(dest, 'utf8') : '';

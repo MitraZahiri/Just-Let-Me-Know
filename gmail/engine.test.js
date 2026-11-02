@@ -126,6 +126,13 @@ test('send mode, human reply, status label and non-applications', () => {
   assert.ok(!threads[3].labels.has('JLMK/Application'));
 });
 
+test('candidate role does not run the employer engine', () => {
+  const msg = application(daysAgo(8));
+  const report = loadEngine([makeThread('t1', [msg])], { role: 'candidate', mode: 'send' }).run({ dryRun: false });
+  assert.match(report.note, /Candidate mode/);
+  assert.equal(msg.drafts.length + msg.sent.length, 0);
+});
+
 test('daily limit is respected', () => {
   const threads = [1, 2, 3].map((i) => makeThread('t' + i, [application(daysAgo(8))]));
   const report = loadEngine(threads, { dailyLimit: 2 }).run({ dryRun: false });

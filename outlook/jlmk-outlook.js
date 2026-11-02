@@ -7,7 +7,7 @@
  * Labels from the Gmail version are Outlook *categories* here: "JLMK: Rejected" etc.
  *
  *   node outlook/jlmk-outlook.js --preview   # show what would happen, change nothing
- *   node outlook/jlmk-outlook.js --run       # draft or send replies (see settings.mode)
+ *   node outlook/jlmk-outlook.js --run       # draft or send replies (see JLMK.deliveryMode)
  *   node outlook/jlmk-outlook.js --login     # sign in only
  */
 'use strict';
@@ -230,6 +230,10 @@ async function main() {
   const dryRun = !args.has('--run');
   const config = loadConfig();
   const settings = JLMK.withDefaults(config.settings);
+  if (settings.role !== JLMK.ROLE.EMPLOYER) {
+    console.error('Candidate mode is not available for Outlook yet. Set "role": "employer" in config.json.');
+    process.exit(1);
+  }
   const token = await getToken(config);
   if (args.has('--login')) { console.log('Signed in. Token cached.'); return; }
 
@@ -266,7 +270,7 @@ async function main() {
     if (dryRun) { console.log('PREVIEW  ' + line); replies++; continue; }
 
     const body = toHtml(JLMK.render(decision.status, { ...info, language }, settings, config.customTemplates));
-    if (settings.mode === 'send') {
+    if (JLMK.deliveryMode(settings) === 'send') {
       await graph.call('POST', `/me/messages/${conv.last.id}/reply`, { comment: body });
     } else {
       await graph.call('POST', `/me/messages/${conv.last.id}/createReply`, { comment: body });
@@ -275,7 +279,7 @@ async function main() {
     used++;
     replies++;
     writeState({ day: today(), count: used });
-    console.log((settings.mode === 'send' ? 'SENT     ' : 'DRAFTED  ') + line);
+    console.log((JLMK.deliveryMode(settings) === 'send' ? 'SENT     ' : 'DRAFTED  ') + line);
   }
 
   console.log(`\n${applications} applications, ${replies} ${dryRun ? 'would get a reply (preview — nothing changed)' : 'handled'}.`);

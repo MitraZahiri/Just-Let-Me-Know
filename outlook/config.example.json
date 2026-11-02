@@ -3,6 +3,7 @@
   "tenantId": "common",
   "aliases": [],
   "settings": {
+    "role": "employer",
     "companyName": "Acme Ltd.",
     "senderName": "Acme HR Team",
     "waitDays": 7,

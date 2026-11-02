@@ -57,6 +57,9 @@ function run(opts) {
 
 function runLocked(opts) {
   var settings = getSettings();
+  if (settings.role !== JLMK.ROLE.EMPLOYER) {
+    return { scanned: 0, applications: 0, actions: [], note: 'Candidate mode is not available in Gmail yet.' };
+  }
   ensureLabels();
   var me = ownAddresses();
   var now = new Date();
@@ -82,7 +85,7 @@ function runLocked(opts) {
       status: decision.status,
       language: info.language,
       reason: decision.reason,
-      mode: opts.dryRun ? 'preview' : settings.mode,
+      mode: opts.dryRun ? 'preview' : JLMK.deliveryMode(settings),
     };
 
     if (budget <= 0) {
@@ -93,7 +96,7 @@ function runLocked(opts) {
 
     if (!opts.dryRun) {
       var body = JLMK.render(decision.status, info, settings, getCustomTemplates());
-      if (settings.mode === 'send') info.replyTo.reply(body);
+      if (JLMK.deliveryMode(settings) === 'send') info.replyTo.reply(body);
       else info.replyTo.createDraftReply(body);
       thread.addLabel(label(LABELS.notified(decision.status)));
       budget--;
@@ -243,7 +246,7 @@ function getLog() {
   return JSON.parse(PropertiesService.getUserProperties().getProperty(LOG_KEY) || '[]');
 }
 
-/** Optional: put a JSON object shaped like JLMK.TEMPLATES in this property to override wording. */
+/** Optional: JSON shaped like core/i18n files, e.g. {"en":{"employer":{"Received":"…"}}}, to override wording. */
 function getCustomTemplates() {
   var raw = PropertiesService.getUserProperties().getProperty('JLMK_TEMPLATES');
   return raw ? JSON.parse(raw) : null;

@@ -3,12 +3,24 @@
  *
  * Pure functions only (no Gmail / Graph calls) so the exact same file runs
  * inside Google Apps Script (as a global) and in Node.js (as a CommonJS module).
+ * Texts live in core/i18n/*.js; candidate-side logic in core/candidate.js.
  */
 var JLMK = (function () {
   'use strict';
 
+  // In Node the language files are modules; in Apps Script they share a global.
+  // Resolved lazily so file load order never matters.
+  function i18n() {
+    return typeof module !== 'undefined' && module.exports ? require('./i18n') : JLMK_I18N;
+  }
+
+  var ROLE = {
+    CANDIDATE: 'candidate', // tracks applications you sent, drafts polite follow-ups
+    EMPLOYER: 'employer',   // answers applications you received
+  };
+
   // ---------------------------------------------------------------------------
-  // Statuses. In Gmail these are labels ("JLMK/Rejected"), in Outlook categories.
+  // Employer statuses. In Gmail these are labels ("JLMK/Rejected"), in Outlook categories.
   // HR applies one manually; the tool sends the matching template on next run.
   // ---------------------------------------------------------------------------
   var STATUS = {
@@ -26,10 +38,15 @@ var JLMK = (function () {
     SKIP: 'Skip',         // never touch this thread
   };
 
+  var MAX_FOLLOW_UPS = 2;
+
   var DEFAULT_SETTINGS = {
-    waitDays: 7,             // days of silence before the automatic "Received" notice
+    role: ROLE.EMPLOYER,     // 'candidate' | 'employer'
+    waitDays: 7,             // days of silence before acting
+    followUpGapDays: 7,      // candidate: days between the 1st and 2nd follow-up
+    maxFollowUps: MAX_FOLLOW_UPS,
     lookbackDays: 60,        // ignore applications older than this
-    mode: 'draft',           // 'draft' (safe default) | 'send'
+    mode: 'draft',           // 'draft' (safe default) | 'send' — employer only, must be set explicitly
     dailyLimit: 50,          // max replies per run/day
     minScore: 3,             // classifier threshold
     companyName: '',
@@ -40,8 +57,19 @@ var JLMK = (function () {
     retentionMonths: 12,
   };
 
+  /**
+   * How replies leave the mailbox. Candidates never get automatic sending,
+   * and employers only when `mode` is exactly 'send'.
+   * @return {'draft'|'send'}
+   */
+  function deliveryMode(settings) {
+    settings = withDefaults(settings);
+    if (settings.role !== ROLE.EMPLOYER) return 'draft';
+    return settings.mode === 'send' ? 'send' : 'draft';
+  }
+
   // ---------------------------------------------------------------------------
-  // Classifier
+  // Application signals (shared by the incoming and the outgoing classifier)
   // ---------------------------------------------------------------------------
   var CV_FILE = /(\bcv\b|resume|résumé|curriculum|ozgecmis|özgeçmiş|lebenslauf|portfolio|portfolyo)/i;
   var DOC_EXT = /\.(pdf|docx?|odt|rtf|pages)$/i;
@@ -63,30 +91,28 @@ var JLMK = (function () {
     /özgeçmişim(i)? ek(te|tedir|liyorum)/i, /ozgecmisim(i)? ek(te|tedir|liyorum)/i,
     /pozisyonu(na|nuza) başvur/i, /ekte (cv|özgeçmiş)/i, /ön yazı|on yazi/i,
   ];
+
+  // Things that look like an application on the surface but are not.
+  var NEGATIVE_SUBJECT = /\b(invoice|receipt|order|payment|statement|newsletter|unsubscribe|digest)\b|fatura|makbuz|sipariş|siparis|ödeme|odeme|ekstre|bülten|bulten|abonelik/i;
+  var NEGATIVE_BODY = [
+    /unsubscribe|abonelikten çık|abonelikten cik/i,                                      // newsletter
+    /(can|could) you (take a )?(look|check|review)|feedback on my (cv|resume)/i,        // "check my CV?" to a friend
+    /bakar m[ıi]s[ıi]n|göz atar m[ıi]s[ıi]n|goz atar m[ıi]s[ıi]n|fikrini|ne düşünüyorsun|ne dusunuyorsun/i,
+    /what do you think/i,
+  ];
+
   var NOT_APPLICATION_SENDERS = /(no-?reply|do-?not-?reply|mailer-daemon|postmaster|notifications?@|newsletter|bounce)/i;
-  var JOB_BOARD_DOMAINS = /@(.*\.)?(linkedin\.com|kariyer\.net|indeed\.com|glassdoor\.com|secretcv\.com|yenibiris\.com|eleman\.net|xing\.com)/i;
+  var JOB_BOARD_DOMAINS = /@(.*\.)?(linkedin\.com|kariyer\.net|indeed\.com|glassdoor\.com|secretcv\.com|yenibiris\.com|eleman\.net|xing\.com)$/i;
+  var FREE_MAIL_DOMAINS = /^(gmail|googlemail|hotmail|outlook|live|msn|yahoo|ymail|icloud|me|mac|yandex|aol|gmx|web|proton|protonmail|mail|zoho|tutanota)\.[a-z.]+$/i;
 
   /**
-   * @param {{subject:string, body:string, from:string, attachments:string[],
-   *          isBulk?:boolean}} msg
-   * @param {object} [settings]
-   * @return {{isApplication:boolean, score:number, reasons:string[]}}
+   * Scores how much a message *reads like* a job application, ignoring who sent it.
+   * @param {{subject:string, body:string, attachments:string[]}} msg
+   * @return {{score:number, reasons:string[]}}
    */
-  function classify(msg, settings) {
-    settings = withDefaults(settings);
+  function applicationSignals(msg) {
     var reasons = [];
     var score = 0;
-    var from = (msg.from || '').toLowerCase();
-    var email = extractEmail(from);
-
-    if (!email) return result(false, 0, ['no sender address']);
-    if (NOT_APPLICATION_SENDERS.test(email)) return result(false, 0, ['automated sender']);
-    if (JOB_BOARD_DOMAINS.test(email)) return result(false, 0, ['job board notification (cannot reply to candidate)']);
-    if (msg.isBulk) return result(false, 0, ['bulk / mailing list']);
-    var domain = email.split('@')[1];
-    if ((settings.ownDomains || []).some(function (d) { return d && domain === d.toLowerCase(); })) {
-      return result(false, 0, ['internal sender']);
-    }
 
     var attachments = msg.attachments || [];
     var cvFile = attachments.some(function (n) { return CV_FILE.test(n) && DOC_EXT.test(n); });
@@ -102,11 +128,40 @@ var JLMK = (function () {
     var hits = BODY_PHRASES.filter(function (r) { return r.test(body); }).length;
     if (hits) { score += Math.min(hits, 2); reasons.push('body: ' + hits + ' application phrase(s)'); }
 
-    return result(score >= settings.minScore, score, reasons);
+    if (NEGATIVE_SUBJECT.test(subject)) { score -= 3; reasons.push('subject: invoice/order/newsletter'); }
+    if (NEGATIVE_BODY.some(function (r) { return r.test(body); })) { score -= 3; reasons.push('body: newsletter or personal request'); }
+
+    return { score: score, reasons: reasons };
+  }
+
+  /**
+   * Employer side: is this *incoming* message a job application?
+   * @param {{subject:string, body:string, from:string, attachments:string[],
+   *          isBulk?:boolean}} msg
+   * @param {object} [settings]
+   * @return {{isApplication:boolean, score:number, reasons:string[]}}
+   */
+  function classify(msg, settings) {
+    settings = withDefaults(settings);
+    var email = extractEmail(msg.from);
+
+    if (!email) return result(false, 0, ['no sender address']);
+    if (NOT_APPLICATION_SENDERS.test(email)) return result(false, 0, ['automated sender']);
+    if (JOB_BOARD_DOMAINS.test(email)) return result(false, 0, ['job board notification (cannot reply to candidate)']);
+    if (msg.isBulk) return result(false, 0, ['bulk / mailing list']);
+    if (isOwnDomain(email, settings)) return result(false, 0, ['internal sender']);
+
+    var s = applicationSignals(msg);
+    return result(s.score >= settings.minScore, s.score, s.reasons);
   }
 
   function result(isApplication, score, reasons) {
     return { isApplication: isApplication, score: score, reasons: reasons };
+  }
+
+  function isOwnDomain(email, settings) {
+    var domain = domainOf(email);
+    return (settings.ownDomains || []).some(function (d) { return d && domain === String(d).toLowerCase().replace(/^@/, ''); });
   }
 
   // ---------------------------------------------------------------------------
@@ -115,6 +170,15 @@ var JLMK = (function () {
   function extractEmail(from) {
     var m = String(from || '').match(/<([^>]+)>/) || String(from || '').match(/([^\s<>"]+@[^\s<>"]+)/);
     return m ? m[1].trim().toLowerCase() : '';
+  }
+
+  function domainOf(email) {
+    var e = extractEmail(email) || String(email || '').toLowerCase();
+    return e.indexOf('@') >= 0 ? e.split('@')[1] : '';
+  }
+
+  function isFreeMail(email) {
+    return FREE_MAIL_DOMAINS.test(domainOf(email));
   }
 
   /** "Ayşe Yılmaz <ayse@x.com>" -> "Ayşe"; falls back to '' when unknown. */
@@ -126,6 +190,7 @@ var JLMK = (function () {
     if (display.indexOf(',') > 0) display = display.split(',')[1].trim(); // "Yılmaz, Ayşe"
     var first = display.split(/\s+/)[0];
     if (!first || first.length < 2) return '';
+    if (/^(hr|ik|İK|team|careers?|jobs?|recruiting|recruitment|talent|insan)$/i.test(first)) return ''; // role mailbox, not a person
     return first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
   }
 
@@ -133,12 +198,12 @@ var JLMK = (function () {
   function extractPosition(subject) {
     var s = String(subject || '').replace(/^\s*((re|fw|fwd|ynt|ilt)\s*:\s*)+/i, '').trim();
     var patterns = [
-      /application for (?:the )?(.+?)(?: position| role)?$/i,
-      /applying for (?:the )?(.+?)(?: position| role)?$/i,
+      /application for (?:the )?(.+?)(?: position| role)?(?: at .+)?$/i,
+      /applying for (?:the )?(.+?)(?: position| role)?(?: at .+)?$/i,
       /^(.+?) (?:position|role) application$/i,
-      /^(.+?) pozisyonu(?: için)? başvuru/i,
-      /^(.+?) pozisyonu(?: icin)? basvuru/i,
-      /başvuru\s*[-–:]\s*(.+)$/i,
+      /^(.+?) pozisyonu(?: için| icin)? başvuru/i,
+      /^(.+?) pozisyonu(?: için| icin)? basvuru/i,
+      /başvuru(?:su)?\s*[-–:]\s*(.+)$/i,
       /application\s*[-–:]\s*(.+)$/i,
     ];
     for (var i = 0; i < patterns.length; i++) {
@@ -146,6 +211,27 @@ var JLMK = (function () {
       if (m && m[1] && m[1].length <= 80) return m[1].replace(/\s*[-–]\s*$/, '').trim();
     }
     return '';
+  }
+
+  // Second-level domains under which the company name sits one label further left.
+  var SLD = /^(com|co|org|net|gov|edu|ac|gen|biz|info|k12|bel|av|web)$/;
+
+  /**
+   * Best-effort company name for an application.
+   * Prefers the recipient's company domain, then " at Acme" / "@ Acme" in the subject.
+   * @param {{to:string, subject?:string}} msg
+   */
+  function extractCompany(msg) {
+    var email = extractEmail(msg.to);
+    if (email && !isFreeMail(email) && !JOB_BOARD_DOMAINS.test(email)) {
+      var parts = domainOf(email).split('.');
+      var i = parts.length - 2;
+      if (i > 0 && SLD.test(parts[i]) && parts[i + 1].length === 2) i--;
+      var name = parts[i] || '';
+      if (name.length >= 2) return name.charAt(0).toUpperCase() + name.slice(1);
+    }
+    var m = String(msg.subject || '').match(/\s(?:at|@)\s+([^\-–|,]{2,40})\s*$/i);
+    return m ? m[1].trim() : '';
   }
 
   var TR_CHARS = /[ğüşıöçĞÜŞİÖÇ]/g;
@@ -169,14 +255,16 @@ var JLMK = (function () {
     var k;
     for (k in DEFAULT_SETTINGS) out[k] = DEFAULT_SETTINGS[k];
     for (k in (settings || {})) if (settings[k] !== undefined && settings[k] !== null && settings[k] !== '') out[k] = settings[k];
+    if (out.role !== ROLE.CANDIDATE) out.role = ROLE.EMPLOYER;
+    out.maxFollowUps = Math.max(0, Math.min(MAX_FOLLOW_UPS, Number(out.maxFollowUps) || 0));
     return out;
   }
 
   // ---------------------------------------------------------------------------
-  // Decision engine
+  // Employer decision engine
   // ---------------------------------------------------------------------------
   /**
-   * Decides what to do with one application thread.
+   * Decides what to do with one received application thread.
    *
    * @param {{
    *   receivedAt: Date,          // first candidate message
@@ -221,118 +309,131 @@ var JLMK = (function () {
   function none(reason) { return { action: 'none', reason: reason }; }
 
   // ---------------------------------------------------------------------------
-  // Templates
+  // Texts
   // ---------------------------------------------------------------------------
-  var TEMPLATES = {
-    en: {
-      greeting: 'Dear {{name}},',
-      greetingNoName: 'Hello,',
-      Received:
-        'Thank you for your application{{forPosition}}. We want to let you know that it reached us and has been seen by our team.\n\n' +
-        'We are not able to move forward with it right now, but we would like to keep your CV in our talent pool and will reach out to you if a suitable opportunity opens up.\n\n' +
-        'We appreciate your interest in {{company}} and wish you the best in your search.',
-      InReview:
-        'Thank you for your application{{forPosition}}. Your application is currently being reviewed by our team. ' +
-        'We will get back to you as soon as we have an update — we did not want to leave you without news in the meantime.',
-      Pool:
-        'Thank you for your application{{forPosition}}. We have no matching opening at the moment, ' +
-        'but we were glad to read your CV and have added it to our talent pool. We will contact you if a suitable role comes up.',
-      Rejected:
-        'Thank you for your application{{forPosition}} and for the time you invested. After careful consideration, we have decided to move forward with other candidates for this role.\n\n' +
-        'This was not an easy decision, and we sincerely wish you success in your search.',
-      PositionFilled:
-        'Thank you for your application{{forPosition}}. We want to let you know that this position has now been filled.\n\n' +
-        'We appreciate your interest in {{company}} and would be happy to see your application again for future openings.',
-      privacy: 'Your data is stored only for recruitment purposes for up to {{retentionMonths}} months. You can ask us to delete it at any time by replying to this email.',
-      signoff: 'Kind regards,',
-      forPosition: ' for the {{position}} position',
-    },
-    tr: {
-      greeting: 'Merhaba {{name}},',
-      greetingNoName: 'Merhaba,',
-      Received:
-        '{{forPosition}}başvurunuz için teşekkür ederiz. Başvurunuzun bize ulaştığını ve ekibimiz tarafından görüldüğünü bildirmek isteriz.\n\n' +
-        'Şu an için süreci ilerletemiyoruz; ancak özgeçmişinizi aday havuzumuzda tutmak isteriz. Uygun bir pozisyon açıldığında sizinle iletişime geçeceğiz.\n\n' +
-        '{{company}} ile ilgilendiğiniz için teşekkür eder, kariyerinizde başarılar dileriz.',
-      InReview:
-        '{{forPosition}}başvurunuz için teşekkür ederiz. Başvurunuz şu anda ekibimiz tarafından değerlendirilmektedir. ' +
-        'Bir gelişme olduğunda en kısa sürede size dönüş yapacağız; bu süreçte sizi habersiz bırakmak istemedik.',
-      Pool:
-        '{{forPosition}}başvurunuz için teşekkür ederiz. Şu an için uygun açık pozisyonumuz bulunmuyor; ancak özgeçmişinizi ' +
-        'memnuniyetle aday havuzumuza ekledik. Uygun bir pozisyon açıldığında sizinle iletişime geçeceğiz.',
-      Rejected:
-        '{{forPosition}}başvurunuz ve ayırdığınız zaman için teşekkür ederiz. Yaptığımız değerlendirme sonucunda bu pozisyon için başka adaylarla ilerlemeye karar verdik.\n\n' +
-        'Kolay bir karar olmadı; kariyerinizde başarılar diliyoruz.',
-      PositionFilled:
-        '{{forPosition}}başvurunuz için teşekkür ederiz. Bu pozisyonun dolduğunu bildirmek isteriz.\n\n' +
-        '{{company}} ile ilgilendiğiniz için teşekkür ederiz; gelecekteki ilanlarımızda başvurunuzu yeniden görmekten memnuniyet duyarız.',
-      privacy: 'Kişisel verileriniz yalnızca işe alım amacıyla en fazla {{retentionMonths}} ay süreyle saklanır (KVKK). Bu e-postayı yanıtlayarak verilerinizin silinmesini istediğiniz zaman talep edebilirsiniz.',
-      signoff: 'Saygılarımızla,',
-      forPosition: '{{position}} pozisyonu için ',
-    },
-  };
-
-  function fill(str, vars) {
-    return String(str).replace(/\{\{(\w+)\}\}/g, function (_, k) {
-      return vars[k] !== undefined && vars[k] !== null ? String(vars[k]) : '';
+  function languages() {
+    var all = i18n();
+    return Object.keys(all).map(function (code) {
+      return { code: code, name: all[code].meta.name, dir: all[code].meta.dir, complete: all[code].meta.complete };
     });
   }
 
-  function capitalizeFirst(s) {
-    return s ? s.charAt(0).toLocaleUpperCase('tr') + s.slice(1) : s;
+  function normalizeLanguage(lang) {
+    return i18n()[lang] ? lang : 'en';
   }
 
   /**
-   * Builds the reply body.
+   * Looks up a text: custom override → requested language → English.
+   * @param {string} lang
+   * @param {string} path e.g. 'employer.Received'
+   * @param {object} [overrides] same shape as the language files, keyed by language
+   */
+  function text(lang, path, overrides) {
+    var all = i18n();
+    var sources = [overrides && overrides[lang], all[lang], overrides && overrides.en, all.en];
+    var keys = path.split('.');
+    for (var i = 0; i < sources.length; i++) {
+      var v = sources[i];
+      for (var j = 0; j < keys.length && v !== undefined && v !== null; j++) v = v[keys[j]];
+      if (v !== undefined && v !== null) return v;
+    }
+    return '';
+  }
+
+  /** Fills {{key}}, {{#key}}…{{/key}} (only if set) and {{^key}}…{{/key}} (only if empty). */
+  function fill(str, vars) {
+    var present = function (k) { return vars[k] !== undefined && vars[k] !== null && vars[k] !== ''; };
+    return String(str)
+      .replace(/\{\{([#^])(\w+)\}\}([\s\S]*?)\{\{\/\2\}\}/g, function (_, kind, k, inner) {
+        return (kind === '#') === present(k) ? inner : '';
+      })
+      .replace(/\{\{(\w+)\}\}/g, function (_, k) { return present(k) ? String(vars[k]) : ''; });
+  }
+
+  function capitalizeFirst(s, lang) {
+    return s ? s.charAt(0).toLocaleUpperCase(lang === 'tr' ? 'tr' : 'en') + s.slice(1) : s;
+  }
+
+  /** "12 Ekim" / "October 12" in the requested language (English fallback). */
+  function formatDate(date, lang) {
+    var months = text(lang, 'months');
+    var fmt = text(lang, 'dateFormat');
+    if (!months || !fmt) { months = text('en', 'months'); fmt = text('en', 'dateFormat'); }
+    return fill(fmt, { day: date.getDate(), month: months[date.getMonth()] });
+  }
+
+  /**
+   * Builds a full message: greeting, body, optional privacy note, sign-off.
+   * @param {'employer'|'candidate'} side
+   * @param {string} key template key inside that side
+   * @param {object} vars placeholder values; `name` drives the greeting
+   * @param {{lang:string, privacy?:boolean, signature:string[], overrides?:object}} opts
+   */
+  function compose(side, key, vars, opts) {
+    var lang = opts.lang;
+    var t = function (k) { return text(lang, side + '.' + k, opts.overrides); };
+    var body = fill(t(key), vars).replace(/^\s+/, '');
+    var parts = [
+      vars.name ? fill(t('greeting'), vars) : t('greetingNoName'),
+      capitalizeFirst(body, lang),
+    ];
+    if (opts.privacy) parts.push(fill(t('privacy'), vars));
+    parts.push(t('signoff') + '\n' + opts.signature.filter(Boolean).join('\n'));
+    return parts.join('\n\n').trim() + '\n';
+  }
+
+  /**
+   * Builds the employer's reply to a candidate.
    * @param {string} status one of STATUS values
    * @param {{name?:string, position?:string, language?:string}} ctx
    * @param {object} [settings]
-   * @param {object} [overrides] custom templates in the same shape as TEMPLATES
+   * @param {object} [overrides] custom texts shaped like the language files, e.g. {en:{employer:{Received:'…'}}}
    * @return {string}
    */
   function render(status, ctx, settings, overrides) {
     settings = withDefaults(settings);
-    var lang = ctx.language === 'tr' ? 'tr' : 'en';
-    var t = merge(TEMPLATES[lang], overrides && overrides[lang]);
-    var company = settings.companyName || (lang === 'tr' ? 'şirketimiz' : 'our company');
-    var vars = {
+    var lang = normalizeLanguage(ctx.language);
+    var key = text('en', 'employer.' + status) ? status : STATUS.RECEIVED;
+    return compose('employer', key, {
       name: ctx.name || '',
       position: ctx.position || '',
-      company: company,
+      company: settings.companyName || (lang === 'tr' ? 'şirketimiz' : 'our company'),
       retentionMonths: settings.retentionMonths,
-    };
-    vars.forPosition = ctx.position ? fill(t.forPosition, vars) : '';
-
-    var body = fill(t[status] || t[STATUS.RECEIVED], vars).replace(/^\s+/, '');
-    var parts = [
-      ctx.name ? fill(t.greeting, vars) : t.greetingNoName,
-      capitalizeFirst(body),
-    ];
-    if (settings.includePrivacyNote) parts.push(fill(t.privacy, vars));
-    parts.push(t.signoff + '\n' + [settings.senderName, settings.companyName].filter(Boolean).join('\n'));
-    return parts.join('\n\n').trim() + '\n';
-  }
-
-  function merge(base, extra) {
-    var out = {};
-    var k;
-    for (k in base) out[k] = base[k];
-    for (k in (extra || {})) out[k] = extra[k];
-    return out;
+    }, {
+      lang: lang,
+      privacy: settings.includePrivacyNote,
+      signature: [settings.senderName, settings.companyName],
+      overrides: overrides,
+    });
   }
 
   return {
+    ROLE: ROLE,
     STATUS: STATUS,
     CONTROL: CONTROL,
+    MAX_FOLLOW_UPS: MAX_FOLLOW_UPS,
     DEFAULT_SETTINGS: DEFAULT_SETTINGS,
-    TEMPLATES: TEMPLATES,
+    JOB_BOARD_DOMAINS: JOB_BOARD_DOMAINS,
+    NOT_APPLICATION_SENDERS: NOT_APPLICATION_SENDERS,
+    applicationSignals: applicationSignals,
     classify: classify,
     decide: decide,
+    deliveryMode: deliveryMode,
     render: render,
+    compose: compose,
+    text: text,
+    fill: fill,
+    formatDate: formatDate,
+    languages: languages,
+    normalizeLanguage: normalizeLanguage,
     detectLanguage: detectLanguage,
     extractEmail: extractEmail,
     extractFirstName: extractFirstName,
     extractPosition: extractPosition,
+    extractCompany: extractCompany,
+    domainOf: domainOf,
+    isFreeMail: isFreeMail,
+    isOwnDomain: isOwnDomain,
     withDefaults: withDefaults,
     daysBetween: daysBetween,
   };
