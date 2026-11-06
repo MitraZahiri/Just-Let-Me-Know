@@ -14,7 +14,6 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const msal = require('@azure/msal-node');
 const JLMK = require('../core/jlmk-core');
 
 const DIR = __dirname;
@@ -60,6 +59,8 @@ async function getToken(config) {
       if (ctx.cacheHasChanged) fs.writeFileSync(CACHE_PATH, ctx.tokenCache.serialize(), { mode: 0o600 });
     },
   };
+  // Loaded here, not at the top: the runner logic (and its tests) must work without npm install.
+  const msal = require('@azure/msal-node');
   const app = new msal.PublicClientApplication({
     auth: { clientId: config.clientId, authority: `https://login.microsoftonline.com/${config.tenantId || 'common'}` },
     cache: { cachePlugin },
