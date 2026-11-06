@@ -1,5 +1,6 @@
 /**
- * Gmail engine: scans the mailbox, asks the core what to do, replies or drafts.
+ * Gmail engine, employer mode: scans received applications, asks the core what to do, replies or drafts.
+ * Candidate mode lives in Candidate.js and shares the entry points, settings and limits below.
  * Depends on Core.js (the JLMK global, copied from /core by `npm run build:gmail`).
  */
 
@@ -73,9 +74,7 @@ function run(opts) {
 
 function runLocked(opts) {
   var settings = getSettings();
-  if (settings.role !== JLMK.ROLE.EMPLOYER) {
-    return { scanned: 0, applications: 0, actions: [], note: 'Candidate mode is not available in Gmail yet.' };
-  }
+  if (settings.role === JLMK.ROLE.CANDIDATE) return runCandidate(opts, settings); // Candidate.js
   ensureLabels();
   var started = nowMs_();
   var ctx = {

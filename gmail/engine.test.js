@@ -8,13 +8,15 @@ const vm = require('node:vm');
 const ME = 'hr@acme.com';
 const daysAgo = (n) => new Date(Date.now() - n * 86400000);
 
-function makeMessage({ from, subject = '', body = '', attachments = [], date, headers = {}, isDraft = false }) {
+function makeMessage({ from, to = '', cc = '', subject = '', body = '', attachments = [], date, headers = {}, isDraft = false }) {
   const msg = {
     thread: null,
     sent: [],
     drafts: [],
     draft: isDraft,
     getFrom: () => from,
+    getTo: () => to,
+    getCc: () => cc,
     getSubject: () => subject,
     getPlainBody: () => body,
     getDate: () => date,
@@ -68,10 +70,12 @@ function fakeSearch(threads) {
   };
 }
 
-function loadEngine(threads, settings, { clock } = {}) {
+function loadEngine(threads, settings, { clock, me = ME } = {}) {
   const props = new Map();
   if (settings) props.set('JLMK_SETTINGS', JSON.stringify(settings));
   const triggers = [];
+  const newDrafts = [];
+  const sheets = [];
   const ctx = {
     console,
     PropertiesService: {
@@ -82,13 +86,32 @@ function loadEngine(threads, settings, { clock } = {}) {
       }),
     },
     LockService: { getUserLock: () => ({ tryLock: () => true, releaseLock() {} }) },
-    Session: { getActiveUser: () => ({ getEmail: () => ME }), getScriptTimeZone: () => 'UTC' },
+    Session: { getActiveUser: () => ({ getEmail: () => me }), getScriptTimeZone: () => 'UTC' },
     Utilities: { formatDate: (d) => d.toISOString().slice(0, 10) },
     GmailApp: {
       search: fakeSearch(threads),
       getAliases: () => [],
       getUserLabelByName: () => null,
       createLabel: (name) => ({ getName: () => name }),
+      createDraft: (to, subject, body) => newDrafts.push({ to, subject, body }),
+    },
+    SpreadsheetApp: {
+      openById: (id) => {
+        const ss = sheets.find((s) => s.id === id);
+        if (!ss) throw new Error('not found');
+        return ss.api;
+      },
+      create: (title) => {
+        const ss = { id: 'sheet-' + (sheets.length + 1), title, values: null, frozen: 0 };
+        const sheet = {
+          clearContents: () => { ss.values = null; },
+          getRange: (r, c, rows, cols) => ({ setValues: (v) => { assert.equal(v.length, rows); assert.equal(v[0].length, cols); ss.values = v; } }),
+          setFrozenRows: (n) => { ss.frozen = n; },
+        };
+        ss.api = { getId: () => ss.id, getUrl: () => 'https://sheets/' + ss.id, getSheets: () => [sheet] };
+        sheets.push(ss);
+        return ss.api;
+      },
     },
     ScriptApp: {
       getProjectTriggers: () => triggers.slice(),
@@ -101,12 +124,14 @@ function loadEngine(threads, settings, { clock } = {}) {
     },
   };
   vm.createContext(ctx);
-  for (const f of ['Engine.js', 'Core.js']) { // Engine first on purpose: load order must not matter
+  for (const f of ['Engine.js', 'Candidate.js', 'Core.js']) { // Core last on purpose: load order must not matter
     vm.runInContext(fs.readFileSync(path.join(__dirname, 'src', f), 'utf8'), ctx, { filename: f });
   }
   if (clock) ctx.nowMs_ = clock;
   ctx.triggers = triggers;
   ctx.props = props;
+  ctx.newDrafts = newDrafts;
+  ctx.sheets = sheets;
   return ctx;
 }
 
@@ -172,9 +197,10 @@ test('send mode, human reply, status label and non-applications', () => {
 
 test('candidate role does not run the employer engine', () => {
   const msg = application(daysAgo(8));
-  const report = loadEngine([makeThread('t1', [msg])], { role: 'candidate', mode: 'send' }).run({ dryRun: false });
-  assert.match(report.note, /Candidate mode/);
-  assert.equal(msg.drafts.length + msg.sent.length, 0);
+  const ctx = loadEngine([makeThread('t1', [msg])], { role: 'candidate', mode: 'send' });
+  const report = ctx.run({ dryRun: false });
+  assert.equal(report.applications, 0); // someone else's application is not one *you* sent
+  assert.equal(msg.drafts.length + msg.sent.length + ctx.newDrafts.length, 0);
 });
 
 test('daily limit is respected', () => {
@@ -263,4 +289,170 @@ test('fix8: stops before the time limit, saves the cursor and continues on the n
   ctx.runContinuation();
   assert.equal(done(), 30);
   assert.ok(threads.every((th) => th.messages[0].drafts.length === 1), 'no thread drafted twice');
+});
+
+// --- candidate mode ---------------------------------------------------------------
+
+const CANDIDATE = 'mitra@gmail.com';
+const candidateSettings = (extra = {}) => ({ role: 'candidate', senderName: 'Mitra Zahiri', ...extra });
+const sentApplication = (date, extra = {}) => makeMessage({
+  from: `Mitra Zahiri <${CANDIDATE}>`,
+  to: 'İK Ekibi <ik@globex.com.tr>',
+  subject: 'Veri Analisti pozisyonu başvurusu',
+  body: 'Merhaba, ilanınızdaki Veri Analisti pozisyonuna başvurmak istiyorum. Özgeçmişim ektedir.',
+  attachments: ['Mitra_Zahiri_CV.pdf'],
+  date,
+  ...extra,
+});
+const loadCandidate = (threads, extra) => loadEngine(threads, candidateSettings(extra), { me: CANDIDATE });
+
+test('candidate: labels a sent application and prepares one Turkish follow-up draft — never sends', () => {
+  const msg = sentApplication(daysAgo(9));
+  const thread = makeThread('c1', [msg]);
+  const ctx = loadCandidate([thread], { mode: 'send' }); // 'send' must be ignored in candidate mode
+
+  const report = ctx.run({ dryRun: false });
+  assert.equal(report.applications, 1);
+  assert.ok(thread.labels.has('JLMK/Applied'));
+  assert.ok(thread.labels.has('JLMK/Applied/NoResponse'));
+  assert.equal(ctx.newDrafts.length, 1);
+  assert.equal(ctx.newDrafts[0].to, 'ik@globex.com.tr');
+  assert.equal(ctx.newDrafts[0].subject, 'Re: Veri Analisti pozisyonu başvurusu');
+  assert.match(ctx.newDrafts[0].body, /^Merhaba,\n\nUmarım iyisinizdir/);
+  assert.match(ctx.newDrafts[0].body, /Mitra Zahiri\n$/);
+  assert.equal(msg.sent.length, 0);
+
+  ctx.run({ dryRun: false });
+  assert.equal(ctx.newDrafts.length, 1, 'the same follow-up is not prepared twice');
+});
+
+test('candidate: waits before the first follow-up', () => {
+  const ctx = loadCandidate([makeThread('c1', [sentApplication(daysAgo(3))])]);
+  const report = ctx.run({ dryRun: false });
+  assert.equal(report.applications, 1);
+  assert.equal(ctx.newDrafts.length, 0);
+});
+
+test('candidate: answers the recruiter in the thread instead of the original address', () => {
+  const recruiter = makeMessage({
+    from: 'Can Demir <can.demir@globex.com.tr>', to: CANDIDATE,
+    subject: 'Ynt: Veri Analisti pozisyonu başvurusu', body: 'Merhaba, CV’nizi ekibe ilettim.', date: daysAgo(12),
+  });
+  const mine = makeMessage({
+    from: `Mitra Zahiri <${CANDIDATE}>`, to: 'can.demir@globex.com.tr',
+    subject: 'Ynt: Veri Analisti pozisyonu başvurusu', body: 'Çok teşekkür ederim!', date: daysAgo(11),
+  });
+  const thread = makeThread('c1', [sentApplication(daysAgo(14)), recruiter, mine]);
+  const ctx = loadCandidate([thread]);
+  ctx.run({ dryRun: false });
+  assert.equal(recruiter.drafts.length, 1);
+  assert.equal(ctx.newDrafts.length, 0);
+});
+
+test('candidate: a rejection in another thread closes the application and stops follow-ups', () => {
+  const rejection = makeMessage({
+    from: 'Globex Kariyer <no-reply@globex.com.tr>', to: CANDIDATE,
+    subject: 'Başvurunuz hakkında', body: 'Değerlendirmemiz sonucunda başka adaylarla ilerlemeye karar verdik.',
+    date: daysAgo(2), headers: { 'Auto-Submitted': 'auto-generated' },
+  });
+  const sent = makeThread('c1', [sentApplication(daysAgo(10))]);
+  const ctx = loadCandidate([sent, makeThread('c2', [rejection])]);
+  const report = ctx.run({ dryRun: false });
+  assert.equal(report.summary.byStatus.Rejected, 1);
+  assert.ok(sent.labels.has('JLMK/Applied/Rejected'));
+  assert.ok(!sent.labels.has('JLMK/Applied/NoResponse'));
+  assert.equal(ctx.newDrafts.length, 0);
+});
+
+test('candidate: preview prepares nothing and changes no labels', () => {
+  const thread = makeThread('c1', [sentApplication(daysAgo(9))]);
+  const ctx = loadCandidate([thread]);
+  const report = ctx.run({ dryRun: true });
+  assert.equal(report.actions.length, 1);
+  assert.equal(report.actions[0].mode, 'preview');
+  assert.equal(ctx.newDrafts.length, 0);
+  assert.equal(thread.labels.size, 0);
+});
+
+test('candidate: ignored threads (JLMK/Skip) are left alone', () => {
+  const thread = makeThread('c1', [sentApplication(daysAgo(9))], ['JLMK/Skip']);
+  const ctx = loadCandidate([thread]);
+  assert.equal(ctx.run({ dryRun: false }).applications, 0);
+  assert.equal(ctx.newDrafts.length, 0);
+});
+
+test('candidate: maxFollowUps 0 only tracks', () => {
+  const thread = makeThread('c1', [sentApplication(daysAgo(30))]);
+  const ctx = loadCandidate([thread], { maxFollowUps: 0 });
+  assert.equal(ctx.run({ dryRun: false }).applications, 1);
+  assert.equal(ctx.newDrafts.length, 0);
+});
+
+test('candidate: an incomplete scan never prepares follow-ups', () => {
+  let t = 0;
+  const threads = [makeThread('c1', [sentApplication(daysAgo(9))]), makeThread('c2', [sentApplication(daysAgo(9))])];
+  const ctx = loadEngine(threads, candidateSettings(), { me: CANDIDATE, clock: () => (t += 3 * 60 * 1000) });
+  const report = ctx.run({ dryRun: false });
+  assert.equal(report.partial, true);
+  assert.equal(ctx.newDrafts.length, 0);
+});
+
+test('candidate: export writes a Turkish sheet in your Drive and reuses it next time', () => {
+  const ctx = loadCandidate([makeThread('c1', [sentApplication(daysAgo(9))])], { defaultLanguage: 'tr' });
+  const first = ctx.exportToSheet();
+  assert.equal(first.rows, 1);
+  assert.equal(ctx.sheets.length, 1);
+  assert.equal(ctx.sheets[0].title, 'Just Let Me Know — Başvurularım');
+  assert.equal(ctx.sheets[0].values[0][0], 'Şirket');
+  assert.equal(ctx.sheets[0].values[1][4], 'Henüz yanıt yok');
+  assert.equal(ctx.sheets[0].frozen, 1);
+  assert.equal(ctx.newDrafts.length, 0, 'export is read-only');
+
+  const second = ctx.exportToSheet();
+  assert.equal(second.url, first.url);
+  assert.equal(ctx.sheets.length, 1);
+});
+
+test('sidebar: candidate home, preview, export and message cards build without errors', () => {
+  // Any CardService call chain returns another chainable stub.
+  const stub = () => new Proxy(function () {}, { get: (t, k) => (k === 'build' ? () => ({ built: true }) : stub()), apply: () => stub() });
+  const thread = makeThread('c1', [sentApplication(daysAgo(9))]);
+  const ctx = loadCandidate([thread]);
+  ctx.CardService = stub();
+  ctx.GmailApp.getMessageById = () => ({ getThread: () => thread });
+  ctx.GmailApp.setCurrentMessageAccessToken = () => {};
+  vm.runInContext(fs.readFileSync(path.join(__dirname, 'src', 'AddOn.js'), 'utf8'), ctx, { filename: 'AddOn.js' });
+
+  ctx.handleRunNow();
+  assert.ok(ctx.onHomepage().built);
+  ctx.handlePreview();
+  ctx.handleExport();
+  assert.ok(ctx.buildMessageCard('m1').built);
+  const event = (parameters, inputs = {}) => ({
+    gmail: { accessToken: 'x' },
+    commonEventObject: { parameters, formInputs: Object.fromEntries(Object.entries(inputs).map(([k, v]) => [k, { stringInputs: { value: [v] } }])) },
+  });
+  ctx.handleCandidateMark(event({ messageId: 'm1', mark: 'skip' }));
+  assert.ok(thread.labels.has('JLMK/Skip'));
+  ctx.handleSaveSettings(event({ form: 'candidate' }, { role: 'candidate', maxFollowUps: '1', waitDays: '10' }));
+  const saved = JSON.parse(ctx.props.get('JLMK_SETTINGS'));
+  assert.equal(saved.maxFollowUps, 1);
+  assert.equal(saved.waitDays, 10);
+  assert.equal(saved.role, 'candidate');
+});
+
+test('sidebar: employer home card still builds, and saving it keeps the employer fields', () => {
+  const stub = () => new Proxy(function () {}, { get: (t, k) => (k === 'build' ? () => ({ built: true }) : stub()), apply: () => stub() });
+  const ctx = loadEngine([], { companyName: 'Acme' });
+  ctx.CardService = stub();
+  vm.runInContext(fs.readFileSync(path.join(__dirname, 'src', 'AddOn.js'), 'utf8'), ctx, { filename: 'AddOn.js' });
+  assert.ok(ctx.onHomepage().built);
+  const input = (v) => ({ stringInputs: { value: [v] } });
+  ctx.handleSaveSettings({ commonEventObject: { parameters: { form: 'employer' }, formInputs: {
+    role: input('employer'), companyName: input('Acme'), mode: input('draft'), includePrivacyNote: input('yes'),
+  } } });
+  const saved = JSON.parse(ctx.props.get('JLMK_SETTINGS'));
+  assert.equal(saved.role, 'employer');
+  assert.equal(saved.companyName, 'Acme');
+  assert.equal(saved.includePrivacyNote, true);
 });

@@ -104,7 +104,7 @@ test('classifyReply: interview (EN, TR) but not the "görüşmek üzere" sign-of
 test('classifyReply: acknowledgment and automated ATS mail', () => {
   assert.equal(C.classifyReply(reply('Thank you for applying! We have received your application.')).kind, 'acknowledged');
   const ats = C.classifyReply(reply('Please complete your candidate profile.', { from: 'no-reply@greenhouse.io', isAuto: true }));
-  assert.deepEqual(ats, { kind: 'acknowledged', automated: true });
+  assert.deepEqual(ats, { kind: 'acknowledged', automated: true, explicit: false });
 });
 
 test('classifyReply: out-of-office and bounces are not answers', () => {
@@ -331,4 +331,177 @@ test('summarize', () => {
   assert.equal(s.total, 3);
   assert.equal(s.byStatus.Rejected, 2);
   assert.equal(s.byStatus.Interview, 0);
+});
+
+// --- stage 2: tracking the whole mailbox ------------------------------------------
+
+test('trackThread: a thread you marked yourself counts even if it does not read like an application', () => {
+  const msg = application({ subject: 'Hello', body: 'Nice to meet you at the fair yesterday.', attachments: [] });
+  assert.equal(track([msg]), null);
+  const app = C.trackThread({ id: 't9', messages: [msg], me: [ME], forced: true }, day(1));
+  assert.equal(app.threadId, 't9');
+  assert.equal(app.status, C.STATUS.SENT);
+});
+
+test('decideFollowUp: no second draft while one is waiting in the conversation', () => {
+  const app = C.trackThread({ messages: [application()], me: [ME], draftExists: true }, day(10));
+  const d = C.decideFollowUp(app, day(10));
+  assert.equal(d.action, 'none');
+  assert.equal(d.code, 'draftPending');
+});
+
+test('decideFollowUp: every decision carries a code for the UI', () => {
+  assert.equal(C.decideFollowUp(track([application()], day(3)), day(3)).code, 'waiting');
+  assert.equal(C.decideFollowUp(track([application()], day(8)), day(8)).code, 'due');
+  const rejected = track([application(), reply('We regret to inform you that we will not be moving forward.')], day(8));
+  assert.equal(C.decideFollowUp(rejected, day(8)).code, 'rejected');
+  const theirs = track([application(), reply('Could you send me your portfolio?')], day(12));
+  assert.equal(C.decideFollowUp(theirs, day(12)).code, 'theirTurn');
+});
+
+test('classifyReply: explicit only when the text says what happened', () => {
+  assert.equal(C.classifyReply(reply('We have received your application.')).explicit, true);
+  assert.equal(C.classifyReply(reply('Thanks, talk soon.')).explicit, false);
+  assert.equal(C.classifyReply(reply('Your invoice is ready', { from: 'billing@acme.com', isAuto: true })).explicit, false);
+});
+
+test('followUpTarget: answers the recruiter who wrote, not the original address', () => {
+  const msgs = [application(), reply('Thanks, I will pass it on to the team.', { from: 'Jane Doe <jane@acme.com>' })];
+  const app = track(msgs, day(20));
+  const t = C.followUpTarget(msgs, app, [ME]);
+  assert.equal(t.replyTo, msgs[1]);
+  assert.equal(t.to, 'jane@acme.com');
+  assert.equal(t.name, 'Jane');
+});
+
+test('followUpTarget: skips no-reply, out-of-office and job-site senders', () => {
+  const msgs = [
+    application(),
+    reply('We have received your application.', { from: 'Acme Careers <no-reply@acme.com>', isAuto: true }),
+    reply('I am currently out of the office until Monday.', { from: 'Jane Doe <jane@acme.com>' }),
+    reply('Your application was viewed', { from: 'jobs-noreply@linkedin.com' }),
+  ];
+  const t = C.followUpTarget(msgs, track(msgs, day(20)), [ME]);
+  assert.equal(t.replyTo, null);
+  assert.equal(t.to, 'hr@acme.com');
+  assert.equal(t.subject, 'Re: Application for Data Analyst position');
+});
+
+test('followUpTarget: does not stack "Re:" prefixes (also Turkish "Ynt:")', () => {
+  const msgs = [application({ subject: 'Ynt: Başvuru - Veri Analisti' })];
+  const app = C.trackThread({ messages: msgs, me: [ME], forced: true }, day(20));
+  assert.equal(C.followUpTarget(msgs, app, [ME]).subject, 'Ynt: Başvuru - Veri Analisti');
+});
+
+// reconcile: answers that arrive outside the application thread
+let inboxId = 0;
+const sentThread = (extra = {}) => ({ id: 'sent-1', messages: [application()], ...extra });
+const inboxMsg = (extra) => ({ to: ME, date: day(5), threadId: 'in-' + (++inboxId), ...extra });
+const reconcile = (inbox, now = day(20), threads = [sentThread()]) => C.reconcile({ threads, inbox, me: [ME] }, now);
+
+test('reconcile: an ATS rejection from another thread closes the application — no follow-up', () => {
+  const apps = reconcile([inboxMsg({
+    from: 'Acme Careers <no-reply@acme.com>', isAuto: true,
+    subject: 'Your application to Acme', body: 'Unfortunately we have decided to move forward with other candidates.',
+  })]);
+  assert.equal(apps.length, 1);
+  assert.equal(apps[0].status, C.STATUS.REJECTED);
+  assert.equal(apps[0].decision.action, 'none');
+});
+
+test('reconcile: an interview invitation from another thread is matched', () => {
+  const apps = reconcile([inboxMsg({
+    from: 'Jane Doe <jane@acme.com>', subject: 'Data Analyst — next steps',
+    body: 'We would like to invite you to an interview. What is your availability next week?',
+  })]);
+  assert.equal(apps[0].status, C.STATUS.INTERVIEW);
+});
+
+test('reconcile false positive: a newsletter from the same company does not change the status', () => {
+  const apps = reconcile([inboxMsg({
+    from: 'Acme <news@acme.com>', isBulk: true,
+    subject: 'Acme monthly: thank you for your interest', body: 'Thank you for your interest in Acme. Unsubscribe here.',
+  })]);
+  assert.equal(apps[0].status, C.STATUS.NO_RESPONSE);
+  assert.equal(apps[0].decision.code, 'due');
+});
+
+test('reconcile false positive: an invoice from the same company does not change the status', () => {
+  const apps = reconcile([inboxMsg({
+    from: 'Acme Billing <billing@acme.com>', isAuto: true,
+    subject: 'Your Acme invoice #4411', body: 'Your invoice for October is attached.',
+  })]);
+  assert.equal(apps[0].status, C.STATUS.NO_RESPONSE);
+});
+
+test('reconcile false positive: a job alert mentioning the company is not an answer', () => {
+  const apps = reconcile([inboxMsg({
+    from: 'LinkedIn <jobalerts-noreply@linkedin.com>', isBulk: true,
+    subject: 'Acme is hiring: Data Analyst', body: 'New jobs for you. Acme is hiring.',
+  })]);
+  assert.equal(apps.length, 1);
+  assert.equal(apps[0].status, C.STATUS.NO_RESPONSE);
+});
+
+test('reconcile false positive: personal mail that mentions the company is not an answer', () => {
+  const apps = reconcile([inboxMsg({
+    from: 'Deniz <deniz@gmail.com>', subject: 'Acme?', body: 'Did you hear back from Acme yet? Fingers crossed!',
+  })]);
+  assert.equal(apps[0].status, C.STATUS.NO_RESPONSE);
+});
+
+test('reconcile: a job-site confirmation becomes an application without follow-ups', () => {
+  const apps = reconcile([inboxMsg({
+    from: 'LinkedIn <jobs-noreply@linkedin.com>', subject: 'Your application was sent to Globex',
+    body: 'You applied for the Product Designer position.', date: day(2),
+  })], day(20), []);
+  assert.equal(apps.length, 1);
+  assert.equal(apps[0].source, 'linkedin');
+  assert.equal(apps[0].company, 'Globex');
+  assert.equal(apps[0].status, C.STATUS.NO_RESPONSE);
+  assert.equal(apps[0].decision.code, 'noAddress');
+});
+
+test('reconcile: answers inside an application thread are not counted twice', () => {
+  const answer = reply('We have received your application.', { threadId: 'sent-1' });
+  const apps = reconcile([answer], day(20), [sentThread({ messages: [application(), answer] })]);
+  assert.equal(apps.length, 1);
+  assert.equal(apps[0].status, C.STATUS.ACKNOWLEDGED);
+});
+
+test('reconcile: the follow-up greets the person it is addressed to', () => {
+  const msgs = [
+    application(),
+    reply('Thanks, I will pass it on.', { from: 'Jane Doe <jane@acme.com>' }),
+    { from: ME, to: 'jane@acme.com', subject: 'Re: Application for Data Analyst position', body: 'Thank you, Jane!', date: day(4) },
+  ];
+  const [app] = reconcile([], day(30), [{ id: 's', messages: msgs }]);
+  assert.equal(app.decision.action, 'draft');
+  assert.equal(app.target.to, 'jane@acme.com');
+  assert.match(C.renderFollowUp(app.decision.kind, { ...app, recipientName: app.target.name }), /^Hello Jane,/);
+});
+
+// export
+test('exportRows: Turkish headers and status names, newest first', () => {
+  const older = track([application({ date: day(0) })], day(20));
+  const newer = track([application({ date: day(5), to: 'ik@globex.com.tr', messageId: '<2>' })], day(20));
+  [older, newer].forEach((a) => { a.decision = C.decideFollowUp(a, day(20)); });
+  const rows = C.exportRows([older, newer], { defaultLanguage: 'tr' });
+  assert.deepEqual(rows[0].slice(0, 5), ['Şirket', 'Pozisyon', 'Başvuru tarihi', 'Gönderilen adres / site', 'Durum']);
+  assert.equal(rows[1][3], 'ik@globex.com.tr');
+  assert.equal(rows[1][4], 'Henüz yanıt yok');
+  assert.equal(rows[1][7], 'Hatırlatma taslağı zamanı');
+  assert.equal(rows.length, 3);
+});
+
+test('exportRows: German skeleton falls back to English', () => {
+  const rows = C.exportRows([], { defaultLanguage: 'de' });
+  assert.equal(rows[0][0], 'Company');
+});
+
+test('safeCell: text that Sheets would run as a formula is escaped', () => {
+  assert.equal(C.safeCell('=HYPERLINK("http://x")'), '\'=HYPERLINK("http://x")');
+  assert.equal(C.safeCell('+90 555'), "'+90 555");
+  assert.equal(C.safeCell('Acme'), 'Acme');
+  assert.equal(C.safeCell(2), 2);
 });

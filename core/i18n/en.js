@@ -51,6 +51,25 @@ JLMK_I18N.en = {
       'If the position has been filled or you have decided to go with other candidates, a one-line reply would be completely fine and would really help me. ' +
       'If it is still open, I would be glad to share anything else you need.\n\n' +
       'Thank you, and all the best.',
+
+    // Spreadsheet export (column titles, status names, next step).
+    export: {
+      sheetTitle: 'Just Let Me Know — My applications',
+      columns: {
+        company: 'Company', position: 'Position', appliedOn: 'Applied on', via: 'Sent to / via',
+        status: 'Status', lastAnswer: 'Last answer', followUps: 'Follow-ups', nextStep: 'Next step', subject: 'Subject',
+      },
+      status: {
+        Sent: 'Sent', Acknowledged: 'Received by them', NoResponse: 'No answer yet',
+        Rejected: 'Not selected', Interview: 'Interview',
+      },
+      next: {
+        due: 'Follow-up draft due', draftPending: 'A draft is waiting in Gmail', waiting: 'Waiting',
+        theirTurn: 'They answered — your turn', rejected: 'Closed', interview: 'Interview — good luck!',
+        maxed: 'Followed up enough', old: 'Older than the tracking window',
+        noAddress: 'Applied on a job site — no follow-up', bounced: 'Email bounced — check the address',
+      },
+    },
   },
 };
 

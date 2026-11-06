@@ -119,7 +119,8 @@ var JLMK = (function () {
   ];
 
   var NOT_APPLICATION_SENDERS = /(no-?reply|do-?not-?reply|mailer-daemon|postmaster|notifications?@|newsletter|bounce)/i;
-  var JOB_BOARD_DOMAINS = /@(.*\.)?(linkedin\.com|kariyer\.net|indeed\.com|glassdoor\.com|secretcv\.com|yenibiris\.com|eleman\.net|xing\.com)$/i;
+  var JOB_BOARD_DOMAIN_LIST = ['linkedin.com', 'kariyer.net', 'indeed.com', 'glassdoor.com', 'secretcv.com', 'yenibiris.com', 'eleman.net', 'xing.com'];
+  var JOB_BOARD_DOMAINS = new RegExp('@(.*\\.)?(' + JOB_BOARD_DOMAIN_LIST.join('|').replace(/\./g, '\\.') + ')$', 'i');
   var FREE_MAIL_DOMAINS = /^(gmail|googlemail|hotmail|outlook|live|msn|yahoo|ymail|icloud|me|mac|yandex|aol|gmx|web|proton|protonmail|mail|zoho|tutanota)\.[a-z.]+$/i;
 
   /**
@@ -475,6 +476,7 @@ var JLMK = (function () {
     MAX_FOLLOW_UPS: MAX_FOLLOW_UPS,
     DEFAULT_SETTINGS: DEFAULT_SETTINGS,
     JOB_BOARD_DOMAINS: JOB_BOARD_DOMAINS,
+    JOB_BOARD_DOMAIN_LIST: JOB_BOARD_DOMAIN_LIST,
     NOT_APPLICATION_SENDERS: NOT_APPLICATION_SENDERS,
     PREFILTER_WORDS: PREFILTER_WORDS,
     applicationSignals: applicationSignals,

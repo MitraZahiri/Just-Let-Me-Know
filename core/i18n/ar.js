@@ -27,6 +27,19 @@ JLMK_I18N.ar = {
     signoff: null,
     followUp1: null,
     followUp2: null,
+
+    export: {
+      sheetTitle: null,
+      columns: {
+        company: null, position: null, appliedOn: null, via: null,
+        status: null, lastAnswer: null, followUps: null, nextStep: null, subject: null,
+      },
+      status: { Sent: null, Acknowledged: null, NoResponse: null, Rejected: null, Interview: null },
+      next: {
+        due: null, draftPending: null, waiting: null, theirTurn: null, rejected: null, interview: null,
+        maxed: null, old: null, noAddress: null, bounced: null,
+      },
+    },
   },
 };
 

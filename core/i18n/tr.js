@@ -48,6 +48,24 @@ JLMK_I18N.tr = {
       'Pozisyon dolduysa ya da başka adaylarla ilerlemeye karar verdiyseniz, tek satırlık bir yanıt bile benim için çok değerli olur. ' +
       'Hâlâ açıksa, ihtiyaç duyacağınız her bilgiyi memnuniyetle paylaşırım.\n\n' +
       'Teşekkür eder, iyi çalışmalar dilerim.',
+
+    export: {
+      sheetTitle: 'Just Let Me Know — Başvurularım',
+      columns: {
+        company: 'Şirket', position: 'Pozisyon', appliedOn: 'Başvuru tarihi', via: 'Gönderilen adres / site',
+        status: 'Durum', lastAnswer: 'Son yanıt', followUps: 'Hatırlatma', nextStep: 'Sıradaki adım', subject: 'Konu',
+      },
+      status: {
+        Sent: 'Gönderildi', Acknowledged: 'Ulaştı', NoResponse: 'Henüz yanıt yok',
+        Rejected: 'Olumsuz', Interview: 'Mülakat',
+      },
+      next: {
+        due: 'Hatırlatma taslağı zamanı', draftPending: 'Gmail’de bekleyen taslak var', waiting: 'Bekleniyor',
+        theirTurn: 'Yanıt geldi — sıra sizde', rejected: 'Kapandı', interview: 'Mülakat — başarılar!',
+        maxed: 'Yeterince hatırlatıldı', old: 'Takip süresinden eski',
+        noAddress: 'İlan sitesinden başvuruldu — hatırlatma yok', bounced: 'E-posta ulaşmadı — adresi kontrol edin',
+      },
+    },
   },
 };
 

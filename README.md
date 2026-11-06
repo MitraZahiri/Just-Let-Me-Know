@@ -9,7 +9,7 @@
 | For | People applying for jobs | HR / anyone receiving CVs |
 | What it does | Finds the applications you sent, tracks what happened to each one, prepares a polite follow-up **draft** when nobody answers | Finds incoming applications and answers them — automatically after N days of silence, or with the status HR picks |
 | Sends on its own? | **Never.** You review and send every follow-up yourself | Only if you explicitly switch on *send* mode; drafts by default |
-| Status | 🧱 Logic ready & tested in `core/` — Gmail sidebar and Sheets export are the next step | ✅ Gmail add-on and Outlook script available |
+| Status | ✅ Gmail add-on (sidebar summary, follow-up drafts, Google Sheets export) | ✅ Gmail add-on and Outlook script available |
 
 🔒 **Your mail never leaves your account.** No server, no analytics, no tracking. Everything runs inside your own Google account (Apps Script) or on your own computer (Outlook script).
 
@@ -17,7 +17,7 @@
 
 ## Candidate mode
 
-*Core logic is finished and tested; the Gmail integration comes next (see [Roadmap](#roadmap)).*
+*Available in the Gmail add-on: pick **Candidate** under Settings → "I use this as". Outlook support is on the [Roadmap](#roadmap).*
 
 1. **Detects applications in your Sent mail** — CV attachments, "application / başvuru / özgeçmiş" wording, cover-letter phrases — and **job-board confirmations** ("Your application was sent to Acme" from LinkedIn, Kariyer.net, Indeed).
 2. Keeps a record per application: **company, position, date, status**.
@@ -31,7 +31,18 @@
    | `Interview` | Interview / call invitation |
 
 3. **Matches answers to the right application** — same thread first, otherwise by the sender's company domain, then by the company named in the mail (e.g. ATS mails from Greenhouse). Out-of-office replies and words quoted from your own email don't count.
-4. **Follow-up drafts**: after `waitDays` of silence a short, warm reminder is prepared **as a draft in the same thread**; a second one after another `followUpGapDays`. **Never more than 2**, never after a rejection or interview invite, never when they wrote last (then it's your turn), never for job-board applications (no address to write to) or bounced emails.
+4. **Follow-up drafts**: after `waitDays` of silence a short, warm reminder is prepared as a **draft**; a second one after another `followUpGapDays`. **Never more than 2**, never after a rejection or interview invite, never when they wrote last (then it's your turn), never while another draft is waiting in the conversation, never for job-board applications (no address to write to) or bounced emails.
+   - If a person at the company already wrote in the thread (e.g. a recruiter), the draft **answers that person** in the thread and greets them by name.
+   - Otherwise it is a new draft to the address you applied to, with a `Re:` subject.
+5. Answers from **another address** (an ATS no-reply, a recruiter) only change a status when they clearly say what happened (received / rejected / interview). Newsletters, invoices, job alerts and personal mail that mention the company are ignored.
+6. **Gmail sidebar**: a summary per status, a preview of the follow-ups that are due, and — with an email open — the application's status and next step, plus *Track as application* / *Not an application — ignore*.
+7. **Export to Google Sheets**: one spreadsheet in **your own Drive** (company, position, date, where it was sent, status, last answer, follow-ups, next step). Column names follow your language setting. Running it again updates the same sheet.
+
+| Label (Gmail, candidate mode) | Meaning |
+|---|---|
+| `JLMK/Applied` | Tracked application (add it yourself to track any sent email) |
+| `JLMK/Applied/<status>` | Current status: `Sent`, `Acknowledged`, `NoResponse`, `Rejected`, `Interview` — kept up to date by the tool |
+| `JLMK/Skip` | Not an application — never touch this thread |
 
 Example (TR):
 
@@ -87,7 +98,7 @@ Large mailboxes: the Gmail add-on pages through all matching threads and stops b
 
 ---
 
-## Install — Gmail / Google Workspace (employer mode)
+## Install — Gmail / Google Workspace (both modes)
 
 Runs entirely in your Google account as an Apps Script add-on — no server, free.
 
@@ -95,11 +106,13 @@ Runs entirely in your Google account as an Apps Script add-on — no server, fre
 
 1. Go to <https://script.google.com> → **New project**, name it *Just Let Me Know*.
 2. **Project Settings** → tick *Show "appsscript.json" manifest file*.
-3. Create the files `Core.gs`, `Engine.gs`, `AddOn.gs` and paste in the contents of
-   [`gmail/src/Core.js`](gmail/src/Core.js), [`gmail/src/Engine.js`](gmail/src/Engine.js), [`gmail/src/AddOn.js`](gmail/src/AddOn.js).
+3. Create the files `Core.gs`, `Engine.gs`, `Candidate.gs`, `AddOn.gs` and paste in the contents of
+   [`gmail/src/Core.js`](gmail/src/Core.js), [`gmail/src/Engine.js`](gmail/src/Engine.js), [`gmail/src/Candidate.js`](gmail/src/Candidate.js), [`gmail/src/AddOn.js`](gmail/src/AddOn.js).
    Replace `appsscript.json` with [`gmail/src/appsscript.json`](gmail/src/appsscript.json).
 4. **Deploy → Test deployments → Gmail → Install**.
-5. Open Gmail, click the ✉️✔ icon in the right sidebar, authorise, fill in **Settings**, press **Preview**, then **Turn on**.
+5. Open Gmail, click the ✉️✔ icon in the right sidebar, authorise, choose **Employer** or **Candidate** under *I use this as*, fill in **Settings**, press **Preview**, then **Turn on**.
+
+   The add-on asks for Gmail access, for running a daily trigger and, for the candidate *Export to Google Sheets* button, for Google Sheets. The spreadsheet is created in your own Drive; nothing is sent anywhere else.
 
 **With clasp (developers)**
 
@@ -184,7 +197,8 @@ core/
   candidate.js     candidate side: sent-mail detection, reply classification, matching, follow-ups
   i18n/            texts per language (en, tr, de*, ar*)   *skeleton
   *.test.js        tests
-gmail/src/         Google Apps Script add-on (Core.js is generated — run npm run build:gmail)
+gmail/src/         Google Apps Script add-on: Engine.js (employer), Candidate.js (candidate), AddOn.js (sidebar)
+                   Core.js is generated — run npm run build:gmail
 outlook/           Microsoft Graph runner
 ```
 
@@ -197,7 +211,7 @@ Platform code stays a thin layer: it converts Gmail/Graph messages into plain ob
 ## Roadmap
 
 - [x] **Stage 1 — Core:** candidate/employer role, sent-mail detection, status tracking, reply matching, follow-up rules, language files
-- [ ] **Stage 2 — Candidate mode in Gmail:** scan Sent mail, follow-up drafts, sidebar summary card, export to Google Sheets
+- [x] **Stage 2 — Candidate mode in Gmail:** scan Sent mail, follow-up drafts, sidebar summary card, export to Google Sheets
 - [ ] **Stage 3 — Employer upgrades:** KVKK disclosure / GDPR Art. 13 notice in the default template, weekly HR summary ("you answered X candidates this week, average response time Y days")
 - [ ] Candidate mode for Outlook
 - [ ] Outlook add-in pane with one-click status buttons
@@ -221,12 +235,17 @@ PRs welcome — especially translations and better detection patterns. Every new
 
 ### Aday modu
 
-*Mantık hazır ve test edildi (`core/`). Gmail kenar çubuğu ve Google Sheets'e aktarma bir sonraki aşamada geliyor.*
+*Gmail eklentisinde kullanılabilir: Ayarlar → "I use this as" altında **Candidate** seçin. Outlook desteği yol haritasında.*
 
 - **Gönderilmiş kutunuzdaki başvuruları bulur.** CV ekine, "başvuru / özgeçmiş" gibi ifadelere ve kariyer sitesi onaylarına bakar (LinkedIn, Kariyer.net, Indeed).
 - Her başvuru için **şirket, pozisyon, tarih ve durum** kaydı tutar. Durumlar: *Gönderildi*, *Alındı onayı geldi*, *Cevap yok*, *Olumsuz* ve *Mülakat*.
 - **Gelen cevabı doğru başvuruyla eşleştirir.** Önce aynı yazışmaya, sonra gönderenin şirket alan adına, en son da mailde geçen şirket adına bakar. Otomatik "ofis dışındayım" cevapları ve sizin alıntılanmış mailiniz sayılmaz.
-- 7 gün sessizlik olursa aynı yazışmanın içinde kısa ve kibar bir **hatırlatma taslağı** hazırlar. **En fazla 2 hatırlatma** olur ve **hiçbiri otomatik gönderilmez**. Olumsuz cevap ya da mülakat daveti geldiyse, son yazan karşı tarafsa (yani sıra sizdeyse), başvuru kariyer sitesi üzerinden yapıldıysa ya da mail adrese ulaşmadıysa hatırlatma hazırlanmaz.
+- 7 gün sessizlik olursa kısa ve kibar bir **hatırlatma taslağı** hazırlar. **En fazla 2 hatırlatma** olur ve **hiçbiri otomatik gönderilmez**. Şu durumlarda hatırlatma hazırlanmaz: olumsuz cevap ya da mülakat daveti geldiyse, son yazan karşı tarafsa (yani sıra sizdeyse), yazışmada bekleyen başka bir taslak varsa, başvuru kariyer sitesi üzerinden yapıldıysa ya da mail adrese ulaşmadıysa.
+- Şirketten biri (örneğin bir işe alım uzmanı) yazışmada size daha önce yazdıysa, taslak **o kişiye**, aynı yazışmanın içinden ve adıyla hitap ederek hazırlanır. Kimse yazmadıysa başvurduğunuz adrese `Re:` konulu yeni bir taslak hazırlanır.
+- **Başka bir adresten** gelen cevaplar (ATS no-reply adresleri, işe alım uzmanları) yalnızca ne olduğunu açıkça söylüyorsa durumu değiştirir: başvurunuz alındı, olumsuz ya da mülakat. Şirketin adı geçen bülten, fatura, iş ilanı bildirimi ve kişisel mailler dikkate alınmaz.
+- **Gmail kenar çubuğu** her durumdan kaç başvuru olduğunu ve zamanı gelen hatırlatmaların önizlemesini gösterir. Bir mail açıkken o başvurunun durumunu ve sıradaki adımı da gösterir. Oradan bir maili *başvuru olarak takip edebilir* ya da *başvuru değil* diyerek yok sayabilirsiniz.
+- **Google Sheets'e aktarma** başvurularınızı **kendi Drive'ınızdaki** bir tabloya yazar: şirket, pozisyon, tarih, gönderilen adres ya da site, durum, son yanıt, hatırlatma sayısı ve sıradaki adım. Sütun adları dil ayarınıza göre gelir. Tekrar çalıştırdığınızda aynı tablo güncellenir.
+- Gmail etiketleri: `JLMK/Applied` takip edilen başvuruyu, `JLMK/Applied/<durum>` güncel durumu gösterir. `JLMK/Skip` olan yazışmalara hiç dokunulmaz.
 
 ### İşveren modu
 
@@ -240,7 +259,7 @@ PRs welcome — especially translations and better detection patterns. Every new
 
 ### Ayarlar ve diller
 
-- `role`: `candidate` (aday) ya da `employer` (işveren). Varsayılanı şimdilik `employer`, çünkü aday modunun Gmail arayüzü henüz yok.
+- `role`: `candidate` (aday) ya da `employer` (işveren). Gmail'de kenar çubuğundaki ayarlardan seçilir. Aday modunda `waitDays` (ilk hatırlatmadan önceki sessizlik), `followUpGapDays` (ikinci hatırlatmaya kadar geçen gün) ve `maxFollowUps` (0–2) kullanılır.
 - Metinler [`core/i18n/`](core/i18n/) klasöründe: Türkçe ve İngilizce tam, Almanca ve Arapça iskelet halinde (çevrilene kadar İngilizce gösterilir). Ton kuralı: **sıcak, kısa, suçlamasız.**
 
 Kurulum adımları yukarıda: Gmail için *Install — Gmail*, Outlook için *Install — Outlook* bölümüne bakın.

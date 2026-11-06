@@ -130,7 +130,8 @@ var JLMKCandidate = (function () {
 
   /**
    * @param {object} msg incoming message in an application thread
-   * @return {{kind:'auto'|'bounce'|'rejected'|'interview'|'acknowledged'|'human', automated:boolean}}
+   * @return {{kind:'auto'|'bounce'|'rejected'|'interview'|'acknowledged'|'human', automated:boolean, explicit:boolean}}
+   *         explicit = the text itself says what happened (not just "someone answered")
    */
   function classifyReply(msg) {
     var J = core();
@@ -141,13 +142,15 @@ var JLMKCandidate = (function () {
     var both = subject + '\n' + body;
     var any = function (list) { return list.some(function (r) { return r.test(both); }); };
 
-    if (/mailer-daemon|postmaster/i.test(from) || BOUNCE.test(subject)) return { kind: 'bounce', automated: true };
-    if (OUT_OF_OFFICE_SUBJECT.test(subject) || OUT_OF_OFFICE_BODY.test(body)) return { kind: 'auto', automated: true };
-    if (any(REJECTED)) return { kind: 'rejected', automated: automated };
-    if (any(INTERVIEW)) return { kind: 'interview', automated: automated };
-    if (any(ACKNOWLEDGED)) return { kind: 'acknowledged', automated: automated };
+    var r = function (kind, auto, explicit) { return { kind: kind, automated: auto, explicit: explicit }; };
+
+    if (/mailer-daemon|postmaster/i.test(from) || BOUNCE.test(subject)) return r('bounce', true, true);
+    if (OUT_OF_OFFICE_SUBJECT.test(subject) || OUT_OF_OFFICE_BODY.test(body)) return r('auto', true, true);
+    if (any(REJECTED)) return r('rejected', automated, true);
+    if (any(INTERVIEW)) return r('interview', automated, true);
+    if (any(ACKNOWLEDGED)) return r('acknowledged', automated, true);
     // Any other answer: a person (or a system) did react to the application.
-    return { kind: automated ? 'acknowledged' : 'human', automated: automated };
+    return r(automated ? 'acknowledged' : 'human', automated, false);
   }
 
   var KIND_TO_STATUS = {
@@ -170,8 +173,10 @@ var JLMKCandidate = (function () {
    * Builds the application record for one conversation, or null if the
    * conversation does not contain an application you sent.
    *
-   * @param {{messages: object[], me: string[], followUps?: Date[]}} thread
-   *        followUps = dates this tool already prepared follow-up drafts
+   * @param {{id?: string, messages: object[], me: string[], followUps?: Date[], forced?: boolean, draftExists?: boolean}} thread
+   *        followUps   = dates this tool already prepared follow-up drafts
+   *        forced      = you marked the thread as an application yourself: your first message starts it
+   *        draftExists = an unsent draft is waiting in the conversation
    * @param {Date} now
    * @param {object} [settings]
    */
@@ -184,7 +189,7 @@ var JLMKCandidate = (function () {
 
     var start = -1;
     for (var i = 0; i < msgs.length; i++) {
-      if (isMine(msgs[i]) && classifyOutgoing(msgs[i], settings).isApplication) { start = i; break; }
+      if (isMine(msgs[i]) && (thread.forced || classifyOutgoing(msgs[i], settings).isApplication)) { start = i; break; }
     }
     if (start < 0) return null;
 
@@ -195,6 +200,7 @@ var JLMKCandidate = (function () {
     var language = J.detectLanguage((first.subject || '') + '\n' + (first.body || '').slice(0, 3000), settings.defaultLanguage);
 
     var app = {
+      threadId: thread.id || null,
       source: 'email',
       company: J.extractCompany({ to: toHeader, subject: first.subject }),
       position: J.extractPosition(first.subject),
@@ -211,6 +217,7 @@ var JLMKCandidate = (function () {
       followUpCount: followUps.length,
       lastFollowUpAt: followUps.length ? followUps[followUps.length - 1] : null,
       bounced: false,
+      draftPending: !!thread.draftExists,
       messageIds: first.messageId ? [first.messageId] : [],
     };
 
@@ -221,7 +228,11 @@ var JLMKCandidate = (function () {
       applyReply(app, m);
     }
 
-    if (app.status === STATUS.SENT && J.daysBetween(latestOwnActivity(app), now) >= settings.waitDays) {
+    return markSilence(app, now, settings);
+  }
+
+  function markSilence(app, now, settings) {
+    if (app.status === STATUS.SENT && core().daysBetween(latestOwnActivity(app), now) >= settings.waitDays) {
       app.status = STATUS.NO_RESPONSE;
       app.history.push({ status: STATUS.NO_RESPONSE, at: now, reason: 'no answer after ' + settings.waitDays + ' days' });
     }
@@ -296,6 +307,34 @@ var JLMKCandidate = (function () {
     };
   }
 
+  /** Application record for a job-site confirmation (no address to write to, so never a follow-up). */
+  function trackConfirmation(conf, now, settings) {
+    var J = core();
+    settings = J.withDefaults(settings);
+    var app = {
+      threadId: null,
+      source: conf.source,
+      company: conf.company || '',
+      position: conf.position || '',
+      recipient: '',
+      recipientName: '',
+      subject: '',
+      appliedAt: conf.appliedAt,
+      language: J.normalizeLanguage(settings.defaultLanguage),
+      status: STATUS.SENT,
+      history: [{ status: STATUS.SENT, at: conf.appliedAt, reason: 'confirmed by ' + conf.source }],
+      lastOutboundAt: conf.appliedAt,
+      lastInboundAt: null,
+      lastHumanInboundAt: null,
+      followUpCount: 0,
+      lastFollowUpAt: null,
+      bounced: false,
+      draftPending: false,
+      messageIds: [],
+    };
+    return markSilence(app, now, settings);
+  }
+
   // ---------------------------------------------------------------------------
   // Matching replies that arrive outside the original thread
   // ---------------------------------------------------------------------------
@@ -353,29 +392,32 @@ var JLMKCandidate = (function () {
    * @param {object} app record from trackThread()
    * @param {Date} now
    * @param {object} [settings]
-   * @return {{action:'none'|'draft', kind?:'followUp1'|'followUp2', reason:string}}
+   * @return {{action:'none'|'draft', code:string, kind?:'followUp1'|'followUp2', reason:string}}
+   *         code = short key for the UI / export (see candidate.export.next in the language files)
    */
   function decideFollowUp(app, now, settings) {
     var J = core();
     settings = J.withDefaults(settings);
-    var none = function (reason) { return { action: 'none', reason: reason }; };
+    var none = function (code, reason) { return { action: 'none', code: code, reason: reason }; };
 
-    if (app.source !== 'email' || !app.recipient) return none('applied via ' + app.source + ' — no address to write to');
-    if (app.bounced) return none('the application email bounced');
-    if (app.status === STATUS.REJECTED) return none('answer received: rejected');
-    if (app.status === STATUS.INTERVIEW) return none('answer received: interview');
-    if (app.followUpCount >= settings.maxFollowUps) return none('already ' + app.followUpCount + ' follow-up(s)');
-    if (J.daysBetween(app.appliedAt, now) > settings.lookbackDays) return none('older than lookback window');
+    if (app.source !== 'email' || !app.recipient) return none('noAddress', 'applied via ' + app.source + ' — no address to write to');
+    if (app.bounced) return none('bounced', 'the application email bounced');
+    if (app.status === STATUS.REJECTED) return none('rejected', 'answer received: rejected');
+    if (app.status === STATUS.INTERVIEW) return none('interview', 'answer received: interview');
+    if (app.draftPending) return none('draftPending', 'a draft is already waiting in this conversation');
+    if (app.followUpCount >= settings.maxFollowUps) return none('maxed', 'already ' + app.followUpCount + ' follow-up(s)');
+    if (J.daysBetween(app.appliedAt, now) > settings.lookbackDays) return none('old', 'older than lookback window');
 
     var ownLast = latestOwnActivity(app);
-    if (app.lastHumanInboundAt && app.lastHumanInboundAt > ownLast) return none('they wrote last — your turn to reply');
+    if (app.lastHumanInboundAt && app.lastHumanInboundAt > ownLast) return none('theirTurn', 'they wrote last — your turn to reply');
 
     var needed = app.followUpCount === 0 ? settings.waitDays : settings.followUpGapDays;
     var silent = J.daysBetween(ownLast, now);
-    if (silent < needed) return none('waiting (' + silent + '/' + needed + ' days)');
+    if (silent < needed) return none('waiting', 'waiting (' + silent + '/' + needed + ' days)');
 
     return {
       action: 'draft',
+      code: 'due',
       kind: app.followUpCount === 0 ? 'followUp1' : 'followUp2',
       reason: silent + ' days without an answer',
     };
@@ -410,6 +452,141 @@ var JLMKCandidate = (function () {
     return { total: (applications || []).length, byStatus: byStatus };
   }
 
+  // ---------------------------------------------------------------------------
+  // Who the follow-up goes to
+  // ---------------------------------------------------------------------------
+  /**
+   * The last message from a person at the company is answered in place; when
+   * nobody has written yet, a new message goes to the address the application
+   * was sent to, with a "Re:" subject so mail apps keep it in the conversation.
+   *
+   * @return {{replyTo: object|null, to: string, name: string, subject: string}}
+   */
+  function followUpTarget(messages, app, me) {
+    var J = core();
+    me = (me || []).map(function (a) { return a.toLowerCase(); });
+    var msgs = (messages || []).slice().sort(function (a, b) { return b.date - a.date; });
+    for (var i = 0; i < msgs.length; i++) {
+      var m = msgs[i];
+      var from = J.extractEmail(m.from);
+      if (!from || me.indexOf(from) >= 0) continue;
+      if (m.isAuto || m.isBulk || J.NOT_APPLICATION_SENDERS.test(from) || J.JOB_BOARD_DOMAINS.test(from)) continue;
+      var kind = classifyReply(m).kind;
+      if (kind === 'auto' || kind === 'bounce') continue;
+      return { replyTo: m, to: from, name: J.extractFirstName(m.from, app.language), subject: '' };
+    }
+    return { replyTo: null, to: app.recipient, name: app.recipientName, subject: reSubject(app.subject) };
+  }
+
+  function reSubject(subject) {
+    subject = String(subject || '').trim();
+    return /^(re|ynt|aw|sv)\s*:/i.test(subject) ? subject : 'Re: ' + subject;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Whole mailbox → application list
+  // ---------------------------------------------------------------------------
+  // Out of the original thread, only answers that clearly say what happened move a status.
+  var MATCHABLE = { rejected: true, interview: true, acknowledged: true };
+
+  /**
+   * Builds every application record and its follow-up decision.
+   *
+   * @param {{
+   *   threads: Array<{id:string, messages:object[], followUps?:Date[], forced?:boolean, draftExists?:boolean}>,
+   *   inbox?: object[],  // received messages, each with `threadId`
+   *   me: string[]
+   * }} input
+   * @return {object[]} records from trackThread()/trackConfirmation() plus `target` and `decision`
+   */
+  function reconcile(input, now, settings) {
+    var J = core();
+    settings = J.withDefaults(settings);
+    var me = (input.me || []).map(function (a) { return a.toLowerCase(); });
+    var apps = [];
+    var tracked = {};
+
+    (input.threads || []).forEach(function (t) {
+      if (tracked[t.id]) return;
+      var app = trackThread({ id: t.id, messages: t.messages, me: me, followUps: t.followUps, forced: t.forced, draftExists: t.draftExists }, now, settings);
+      if (!app) return;
+      app.target = followUpTarget(t.messages, app, me);
+      tracked[t.id] = true;
+      apps.push(app);
+    });
+
+    var inbox = (input.inbox || []).filter(function (m) {
+      return !tracked[m.threadId] && me.indexOf(J.extractEmail(m.from)) < 0;
+    }).sort(function (a, b) { return a.date - b.date; });
+
+    // Job-site confirmations first, so later answers can be matched to them.
+    inbox.forEach(function (m) {
+      if (tracked[m.threadId]) return;
+      var conf = parseJobBoardConfirmation(m);
+      if (!conf) return;
+      var app = trackConfirmation(conf, now, settings);
+      app.threadId = m.threadId || null;
+      app.target = null;
+      tracked[m.threadId] = true;
+      apps.push(app);
+    });
+
+    inbox.forEach(function (m) {
+      if (tracked[m.threadId] || m.isBulk) return;
+      var r = classifyReply(m);
+      if (!MATCHABLE[r.kind] || !r.explicit) return;
+      var hit = matchReply(m, apps);
+      if (hit) applyReply(hit.application, m);
+    });
+
+    apps.forEach(function (a) { a.decision = decideFollowUp(a, now, settings); });
+    return apps;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Spreadsheet export
+  // ---------------------------------------------------------------------------
+  var EXPORT_COLUMNS = ['company', 'position', 'appliedOn', 'via', 'status', 'lastAnswer', 'followUps', 'nextStep', 'subject'];
+
+  /** A cell starting with = + - @ would run as a formula in Sheets / Excel. */
+  function safeCell(v) {
+    if (typeof v !== 'string') return v;
+    return /^[=+\-@\t\r]/.test(v) ? "'" + v : v;
+  }
+
+  function isoDay(d) {
+    if (!d) return '';
+    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+
+  /**
+   * Header + one row per application (newest first), in the settings' language.
+   * @return {Array<Array<string|number>>}
+   */
+  function exportRows(apps, settings) {
+    var J = core();
+    settings = J.withDefaults(settings);
+    var lang = J.normalizeLanguage(settings.defaultLanguage);
+    var t = function (k) { return J.text(lang, 'candidate.export.' + k); };
+    var rows = [EXPORT_COLUMNS.map(function (c) { return t('columns.' + c); })];
+    (apps || []).slice().sort(function (a, b) { return b.appliedAt - a.appliedAt; }).forEach(function (a) {
+      var code = a.decision ? a.decision.code : '';
+      rows.push([
+        a.company,
+        a.position,
+        isoDay(a.appliedAt),
+        a.source === 'email' ? a.recipient : a.source,
+        t('status.' + a.status) || a.status,
+        isoDay(a.lastInboundAt),
+        a.followUpCount,
+        code ? t('next.' + code) : '',
+        a.subject,
+      ].map(safeCell));
+    });
+    return rows;
+  }
+
   return {
     STATUS: STATUS,
     classifyOutgoing: classifyOutgoing,
@@ -418,6 +595,11 @@ var JLMKCandidate = (function () {
     trackThread: trackThread,
     applyReply: applyReply,
     parseJobBoardConfirmation: parseJobBoardConfirmation,
+    trackConfirmation: trackConfirmation,
+    followUpTarget: followUpTarget,
+    reconcile: reconcile,
+    exportRows: exportRows,
+    safeCell: safeCell,
     matchReply: matchReply,
     decideFollowUp: decideFollowUp,
     renderFollowUp: renderFollowUp,

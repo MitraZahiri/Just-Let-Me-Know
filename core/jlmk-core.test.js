@@ -373,3 +373,11 @@ test('fix9: privacyNoticeUrl appears in the KVKK/GDPR note only when set', () =>
   assert.doesNotMatch(JLMK.render('Received', { language: 'en' }, { includePrivacyNote: false, privacyNoticeUrl: url }), /https?:/);
   assert.equal(JLMK.withDefaults({ privacyNoticeUrl: 'javascript:alert(1)' }).privacyNoticeUrl, '');
 });
+
+test('job-site domains: list and pattern agree, dots are literal', () => {
+  assert.ok(JLMK.JOB_BOARD_DOMAIN_LIST.includes('kariyer.net'));
+  assert.ok(JLMK.JOB_BOARD_DOMAINS.test('jobs-noreply@mail.linkedin.com'));
+  assert.ok(JLMK.JOB_BOARD_DOMAINS.test('bilgi@kariyer.net'));
+  assert.ok(!JLMK.JOB_BOARD_DOMAINS.test('hr@linkedinxcom'));
+  assert.ok(!JLMK.JOB_BOARD_DOMAINS.test('hr@notlinkedin.com'));
+});
